@@ -8,11 +8,16 @@ de policy del envido) y 4 (PWA advisor).
 ## Cómo trabajar acá
 
 ```bash
-cargo test --release                  # 225 tests, ~80 s
+cargo test --release                  # 226 tests, ~80 s
 cargo clippy --all-targets --release # tiene que salir limpio
 node scripts/check-encoding.mjs       # avisa si se cuelan caracteres raros
 cargo run --release -p gen-tables    # regenera los dos binarios (~40 s)
 cargo run --release -p gen-tables -- --skip-policy   # solo las tablas de probabilidad
+
+cd web
+npm install
+npm run verify                       # build + prueba de humo del wasm
+npm run dev                          # desarrollo
 ```
 
 Los tests de tablas son lentos en debug. **Siempre `--release`.**
@@ -23,10 +28,11 @@ Todo lo de arriba se ejecutó y pasó, no según el reporte de la sesión anteri
 
 | Chequeo | Resultado |
 |---|---|
-| `cargo test --release` | 225 / 225 verdes, 0 fallados, 80 s |
+| `cargo test --release` | 226 / 226 verdes, 0 fallados, 80 s |
 | `cargo clippy --all-targets --release` | 0 warnings |
-| `node scripts/check-encoding.mjs` | 23 archivos, 7.892 líneas, limpio |
+| `node scripts/check-encoding.mjs` | 27 archivos, 9.210 líneas, limpio |
 | `cargo run --release -p gen-tables` | 8/8 invariantes de probabilidad + 6/6 de policy |
+| `npm run verify` (en `web/`) | build limpio + **19/19** de la prueba de humo del wasm |
 
 Los dos generadores son **deterministas**, así que `.gitignore` los excluye sin
 riesgo: no hay información que se pierda, se reconstruye exacta.
@@ -171,7 +177,7 @@ cargo run --release -p truco-core --example debug_endgame  # desglose de líneas
 | 3 · CFR del envido | ✅ | — |
 | 3b · Tabla de policy | ✅ | — |
 | 4a · Advisor (decisión de envido) | ✅ | Falta el consejo de bazas |
-| 4b · PWA | ❌ | Sin empezar |
+| 4b · PWA | ✅ | Falta el consejo de bazas y la resolución del envido |
 
 ## Fase 4a · el advisor
 
@@ -207,6 +213,53 @@ cargo run --release -p truco-core --example advisor -- "4 de oros,3 de oros,2 de
 
 Todavía no cubre el consejo de bazas, que necesita las tablas de probabilidad
 y promediar el minimax sobre la belief en vez de usar una mano rival fija.
+
+## Fase 4b · la PWA
+
+El core compila a `wasm32-unknown-unknown` y se expone por `wasm.rs`. **Toda la
+frontera con el navegador es JSON en un `String`**: la UI llama a un método y
+hace `JSON.parse`. Es la interfaz más estable que hay y evita una dependencia
+más en el bundle.
+
+```bash
+cd web
+npm run dev          # compila el wasm, copia las tablas y levanta Vite
+npm run verify       # build + prueba de humo
+npm run preview      # sirve dist/ para probar el service worker
+```
+
+| Pieza | Tamaño |
+|---|---|
+| `truco_core_bg.wasm` | 154 KiB |
+| `truco-v1.bin` | 1.879 KiB |
+| `envido-policy-v1.bin` | 191 KiB |
+| app (html + css + js) | 13 KiB |
+| **total** | **2,2 MiB** |
+
+Todo entra en la cache del service worker al primer arranque, así que después
+funciona sin señal. El `.wasm` y los dos `.bin` se cachean para siempre; el
+resto se revalida.
+
+### La prueba de humo importa
+
+`web/scripts/smoke.mjs` levanta **el mismo `.wasm` que carga la app**, le pasa
+las mismas tablas y le hace las mismas preguntas. Compilar no es que andar: sin
+esto, un error en el índice de una carta o en el formato del JSON llegaría a la
+mesa en vez de fallar en el build.
+
+### Dos trampas del andamiaje
+
+- **`shell: true` parte los paths con espacios.** La carpeta del proyecto es
+  `ia truco`, así que `execFileSync` con shell rompía los argumentos.
+- **`wasm-bindgen` no está en el PATH de npm.** El script lo resuelve desde
+  `CARGO_HOME/bin` en vez de confiar del entorno.
+
+### Lo que la PWA todavía no hace
+
+El consejo de bazas y la resolución del envido durante la partida. La UI lleva
+el estado en la `BeliefState` y no en un `HandState` a propósito: la máquina de
+estados necesita las dos manos y en 1v1 no se conoce la del rival. Poner una de
+relleno haría que la resolución del envido saliera falsa.
 
 ## Fase 3 · lo que dice el equilibrio del envido
 

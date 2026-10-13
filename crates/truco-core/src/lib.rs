@@ -47,6 +47,11 @@ pub mod trickplay;
 /// necesita exactamente la misma enumeración para no divergir.
 pub mod testutil;
 
+/// La API que consume la PWA. Solo existe al compilar para wasm32: en nativo
+/// no hay `wasm-bindgen` y no se necesita.
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
+
 pub use cards::{Card, Deck};
 pub use hand::Hand3;
 pub use rules::{BazaResult, Hand2, BAZAS_PER_HAND};

@@ -21,9 +21,16 @@ impl Hand3 {
         Hand3 { cards: [a, b, c] }
     }
 
+    /// Construye una mano a partir de un slice de exactamente tres cartas.
+    ///
+    /// Devuelve `None` si no son tres o si alguna se repite: una mano con la
+    /// misma carta dos veces no existe en el mazo, y devolverla "ok" hace que
+    /// todo lo de abajo (envido, flor, índice combinatorio) calcule sobre una
+    /// mano imposible sin avisar. El invariante de cartas distintas vive acá,
+    /// no en un assert de test.
     pub fn from_slice(cards: &[Card]) -> Option<Self> {
         match cards {
-            [a, b, c] => Some(Hand3::new(*a, *b, *c)),
+            [a, b, c] if a != b && b != c && a != c => Some(Hand3::new(*a, *b, *c)),
             _ => None,
         }
     }
@@ -179,6 +186,7 @@ impl Hand3 {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::cards::parse_card;
     use crate::testutil::{all_hands_iter, hand};
 
@@ -354,5 +362,33 @@ mod tests {
         }
         // 4 palos x 38 cartas restantes por la tercera = 152.
         assert_eq!(count, 152, "deben existir exactamente 152 manos con 33");
+    }
+
+    /// Una mano con la misma carta dos veces no existe. Si `from_slice` la
+    /// aceptara, el envido, la flor y el índice combinatorio calcularían sobre
+    /// algo imposible y nadie se enteraría.
+    #[test]
+    fn una_mano_con_carta_repetida_no_se_puede_construir() {
+        let siete_espadas = crate::cards::parse_card("7 de espada").unwrap();
+        let seis_espadas = crate::cards::parse_card("6 de espada").unwrap();
+        let tres_copas = crate::cards::parse_card("3 de copa").unwrap();
+
+        assert!(Hand3::from_slice(&[siete_espadas, seis_espadas, tres_copas]).is_some());
+
+        for repetida in [
+            [siete_espadas, siete_espadas, tres_copas],
+            [siete_espadas, seis_espadas, seis_espadas],
+            [tres_copas, tres_copas, tres_copas],
+        ] {
+            assert!(
+                Hand3::from_slice(&repetida).is_none(),
+                "una mano con {} repetida tiene que rechazarse",
+                repetida[0]
+            );
+        }
+
+        // Tampoco dos cartas, ni cuatro.
+        assert!(Hand3::from_slice(&[siete_espadas, seis_espadas]).is_none());
+        assert!(Hand3::from_slice(&[]).is_none());
     }
 }

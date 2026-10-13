@@ -1,0 +1,22 @@
+{
+  "name": "truco-advisor",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Advisor de truco argentino 1v1. 100% offline.",
+  "scripts": {
+    "prepare:wasm": "node scripts/prepare-wasm.mjs",
+    "prepare:tables": "node scripts/copy-tables.mjs",
+    "prepare:assets": "npm run prepare:wasm && npm run prepare:tables",
+    "dev": "npm run prepare:assets && vite",
+    "build": "npm run prepare:assets && tsc --noEmit && vite build",
+    "preview": "vite preview --port 4173",
+    "smoke": "node scripts/smoke.mjs",
+    "verify": "npm run build && npm run smoke",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7"
+  }
+}

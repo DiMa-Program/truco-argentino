@@ -1,0 +1,20 @@
+{
+  "name": "Advisor de truco",
+  "short_name": "Truco",
+  "description": "Advisor de truco argentino 1v1. Funciona sin conexión.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#141414",
+  "theme_color": "#141414",
+  "lang": "es",
+  "icons": [
+    {
+      "src": "./icono.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -6,7 +6,21 @@ rust-version.workspace = true
 license.workspace = true
 description = "Motor de reglas y capa de probabilidad del truco argentino (1v1)"
 
+[lib]
+# `cdylib` solo se usa para compilar a wasm; `rlib` sigue siendo lo que
+# consumen los tests y el generador.
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
+
+# Solo al compilar para el navegador. Gateado por target para que el build
+# nativo no arrastre la dependencia.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+# Solo para serializar la respuesta del advisor. La UI la parsea con
+# `JSON.parse`, que es gratis; no hace falta traer todo el stack de derive.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [dev-dependencies]
 proptest = "1"

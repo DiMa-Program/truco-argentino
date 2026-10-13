@@ -8,11 +8,15 @@
 #   envido-policy-v1.bin 191 KiB  (~12 s, 816 juegos de CFR+)
 /tables/*.bin
 
-# Node / PWA (Fase 3 en adelante)
+# Node / PWA (Fase 4)
 node_modules/
 dist/
 .vite/
 *.tsbuildinfo
+# Salidas del build del front: el `.wasm` se compila con cargo y los `.bin` se
+# copian desde `tables/`. Los dos los genera `npm run prepare:assets`.
+web/public/wasm/
+web/public/tables/
 
 # Export PDF de STATE.md: el markdown es la fuente.
 STATE.pdf

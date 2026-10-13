@@ -1,0 +1,151 @@
+// El puente con el core en WebAssembly.
+//
+// Todo lo que cruza el límite es JSON: la UI llama a un método y parsea la
+// respuesta. Es menos elegante que los objetos tipados pero es exactamente
+// igual de rápido, y evita una dependencia más en el bundle.
+
+export interface CardInfo {
+  index: number;
+  name: string;
+}
+
+export interface Snapshot {
+  my_envido: number;
+  has_flor: boolean;
+  p_opponent_flor: number;
+  falta_value: number;
+  falta_asymmetric: boolean;
+  opponent_model: string;
+  belief_size: number;
+  concentration: number;
+  declared: number | null;
+}
+
+export interface EnvidoOptionJson {
+  choice: string;
+  ev: number;
+  p_they_want: number;
+  p_win_if_wanted: number;
+  points: number;
+  is_bluff: boolean;
+  declared: number;
+}
+
+export interface Advice {
+  recommended: string;
+  declared: number;
+  confidence: string;
+  my_value: number;
+  p_win_envido: number;
+  points_at_stake: number;
+  options: EnvidoOptionJson[];
+  reasons: string[];
+}
+
+/** La clase que exporta wasm-bindgen. Se tipa acá a mano: no hay tipos. */
+interface TrucoWasm {
+  free(): void;
+  loadTables(bytes: Uint8Array): void;
+  loadPolicy(bytes: Uint8Array): void;
+  setHand(cards: Uint8Array): void;
+  setScore(a: number, b: number): void;
+  setModel(index: number): void;
+  setMano(iAmMano: boolean): void;
+  observeDeclared(value: number): void;
+  observePlayedCard(
+    card: number,
+    heLeads: boolean,
+    trick: number,
+    bazasMias: number,
+    bazasSuyas: number,
+  ): void;
+  isReady(): boolean;
+  snapshot(): string;
+  advice(): string;
+  deck(): string;
+}
+
+const WASM_URL = new URL("./wasm/truco_core.js", document.baseURI).href;
+
+export class Engine {
+  #truco: TrucoWasm | null = null;
+
+  async load(onProgress: (message: string) => void): Promise<void> {
+    onProgress("traendo el motor…");
+    const glue = await import(/* @vite-ignore */ WASM_URL);
+    const init = (glue as { default: (input?: unknown) => Promise<unknown> }).default;
+    await init();
+
+    onProgress("traendo las tablas…");
+    const [tablas, policy] = await Promise.all([
+      fetch(new URL("./tables/truco-v1.bin", document.baseURI)).then((r) => {
+        if (!r.ok) throw new Error(`truco-v1.bin: HTTP ${r.status}`);
+        return r.arrayBuffer();
+      }),
+      fetch(new URL("./tables/envido-policy-v1.bin", document.baseURI)).then((r) => {
+        if (!r.ok) throw new Error(`envido-policy-v1.bin: HTTP ${r.status}`);
+        return r.arrayBuffer();
+      }),
+    ]);
+
+    const modulo = glue as { Truco: new () => TrucoWasm };
+    this.#truco = new modulo.Truco();
+
+    onProgress("calculando…");
+    this.#truco.loadTables(new Uint8Array(tablas));
+    this.#truco.loadPolicy(new Uint8Array(policy));
+
+    onProgress("listo");
+  }
+
+  get listo(): boolean {
+    return this.#truco !== null;
+  }
+
+  get deck(): CardInfo[] {
+    return JSON.parse(this.#requiere().deck()) as CardInfo[];
+  }
+
+  setHand(cards: number[]): void {
+    this.#requiere().setHand(Uint8Array.from(cards));
+  }
+
+  setScore(a: number, b: number): void {
+    this.#requiere().setScore(a, b);
+  }
+
+  setModel(index: number): void {
+    this.#requiere().setModel(index);
+  }
+
+  setMano(iAmMano: boolean): void {
+    this.#requiere().setMano(iAmMano);
+  }
+
+  observeDeclared(value: number): void {
+    this.#requiere().observeDeclared(value);
+  }
+
+  observePlayedCard(card: number, heLeads: boolean, trick: number, mias: number, suyas: number): void {
+    this.#requiere().observePlayedCard(card, heLeads, trick, mias, suyas);
+  }
+
+  get snapshot(): Snapshot {
+    return JSON.parse(this.#requiere().snapshot()) as Snapshot;
+  }
+
+  get advice(): Advice {
+    return JSON.parse(this.#requiere().advice()) as Advice;
+  }
+
+  #requiere(): TrucoWasm {
+    if (!this.#truco) throw new Error("el motor todavía no cargó");
+    return this.#truco;
+  }
+}
+
+/** Separa "7 de Espadas" en número y palo. */
+export function partes(carta: CardInfo): { numero: string; palo: string } {
+  const [numero = "", palo = ""] = carta.name.split(" de ");
+  return { numero, palo };
+}
