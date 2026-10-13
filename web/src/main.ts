@@ -6,7 +6,14 @@
 // formularios.
 
 import "./style.css";
-import { Engine, partes, type CardInfo, type Advice, type Snapshot } from "./engine";
+import {
+  Engine,
+  partes,
+  type Advice,
+  type CardInfo,
+  type PlayAdvice,
+  type Snapshot,
+} from "./engine";
 
 const MODELOS = ["promedio", "novato", "pasivo", "agresivo", "tournament"];
 
@@ -17,6 +24,12 @@ const estado = {
   soyMano: true,
   modelo: 0,
   declarado: null as number | null,
+  /** Si me toca guiar o responder. */
+  respondiendo: false,
+  /** Carta con la que guió el rival, cuando estoy respondiendo. */
+  cartaRival: undefined as number | undefined,
+  bazasMias: 0,
+  bazasSuyas: 0,
 };
 
 const app = document.querySelector<HTMLDivElement>("#cuerpo")!;
@@ -64,6 +77,7 @@ function render(): void {
     seccionMano(deck, listo),
     seccionObservaciones(),
     seccionConsejo(listo),
+    seccionJuego(listo, deck),
   );
 }
 
@@ -284,6 +298,126 @@ function seccionConsejo(listo: boolean): HTMLElement {
   caja.append(porque);
 
   return caja;
+}
+
+// ---------------------------------------------------------------------------
+// Qué carta jugar
+// ---------------------------------------------------------------------------
+
+function seccionJuego(listo: boolean, deck: CardInfo[]): HTMLElement {
+  const caja = section("juego");
+  caja.append(el("h2", "titulo-seccion", "Qué carta jugar"));
+
+  if (!listo) {
+    caja.append(aviso("Primero armá tu mano.", "espera"));
+    return caja;
+  }
+
+  caja.append(selectorTurno(deck), filaMarcadorBazas());
+
+  const salida = estado.respondiendo ? estado.cartaRival : undefined;
+  if (salida !== undefined) {
+    const carta = deck[salida];
+    if (carta) caja.append(el("p", "nota-belief", `El rival guiaría con ${carta.name}.`));
+  }
+
+  let consejo: PlayAdvice;
+  const inicio = performance.now();
+  try {
+    consejo = motor.bestPlay(salida, estado.bazasMias, estado.bazasSuyas);
+  } catch (error) {
+    caja.append(aviso(`No se pudo calcular: ${(error as Error).message}`, "error"));
+    return caja;
+  }
+  const ms = performance.now() - inicio;
+
+  const principal = el("div", "recomendacion");
+  principal.append(
+    el("div", "accion-grande", consejo.card ?? "—"),
+    el("div", "confianza", `ganás la mano el ${(consejo.win_prob * 100).toFixed(0)} %`),
+  );
+  caja.append(principal);
+
+  const lista = el("ul", "opciones");
+  for (const [nombre, p] of consejo.alternatives) {
+    const item = el("li", `opcion${nombre === consejo.card ? " elegida" : ""}`);
+    item.append(
+      el("span", "opcion-nombre", nombre),
+      el("span", "opcion-ev", `${(p * 100).toFixed(0)} %`),
+      el("span", "opcion-detalle", ""),
+    );
+    lista.append(item);
+  }
+  caja.append(lista);
+
+  const porque = el("ul", "razones");
+  for (const razon of consejo.reasons) porque.append(el("li", "", razon));
+  porque.append(el("li", "", `calculado en ${ms.toFixed(0)} ms`));
+  caja.append(porque);
+
+  return caja;
+}
+
+/** ¿Me toca guiar o responder, y con qué carta guió el rival si responde. */
+function selectorTurno(deck: CardInfo[]): HTMLElement {
+  const fila = el("div", "fila-turno");
+
+  const guiar = boton("Me toca guiar", () => {
+    estado.respondiendo = false;
+    estado.cartaRival = undefined;
+    render();
+  }, "chico" + (estado.respondiendo ? "" : " activo"));
+
+  const responder = boton("Respondo", () => {
+    estado.respondiendo = true;
+    if (estado.cartaRival === undefined) estado.cartaRival = deck[0]?.index;
+    render();
+  }, "chico" + (estado.respondiendo ? " activo" : ""));
+
+  fila.append(responder, guiar);
+
+  if (estado.respondiendo) {
+    const selector = document.createElement("select");
+    selector.className = "selector";
+    for (const carta of deck) {
+      const opcion = document.createElement("option");
+      opcion.value = String(carta.index);
+      opcion.textContent = `salida: ${carta.name}`;
+      opcion.selected = carta.index === estado.cartaRival;
+      selector.append(opcion);
+    }
+    selector.addEventListener("change", () => {
+      estado.cartaRival = Number(selector.value);
+      render();
+    });
+    fila.append(selector);
+  }
+
+  return fila;
+}
+
+function filaMarcadorBazas(): HTMLElement {
+  const fila = el("div", "fila-puntos bazas");
+  const mover = (cuales: "mias" | "suyas", delta: number) => {
+    if (cuales === "mias") {
+      estado.bazasMias = Math.max(0, Math.min(2, estado.bazasMias + delta));
+    } else {
+      estado.bazasSuyas = Math.max(0, Math.min(2, estado.bazasSuyas + delta));
+    }
+    render();
+  };
+
+  fila.append(
+    el("span", "quien", "Bozas"),
+    boton("−", () => mover("mias", -1), "chico"),
+    el("strong", "puntos", String(estado.bazasMias)),
+    boton("+", () => mover("mias", 1), "chico"),
+    el("span", "quien", "él"),
+    boton("−", () => mover("suyas", -1), "chico"),
+    el("strong", "puntos", String(estado.bazasSuyas)),
+    boton("+", () => mover("suyas", 1), "chico"),
+  );
+  return fila;
 }
 
 // ---------------------------------------------------------------------------

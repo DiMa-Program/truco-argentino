@@ -266,6 +266,127 @@ fn el_mano_gana_los_empates() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Consejo de bazas
+// ---------------------------------------------------------------------------
+
+#[test]
+fn best_play_devuelve_una_carta_y_probabilidades_sanas() {
+    let my_hand = mano_27();
+    let model = OpponentModel::neutral();
+    let belief = belief_for(my_hand, true, model);
+    let advice = advisor(model, Score { a: 0, b: 0 }, true).best_play(my_hand, None, 0, 0, &belief);
+
+    let card = advice.card.expect("siempre hay una carta que jugar");
+    assert!(my_hand.contains(card), "tiene que ser una carta de mi mano: {card}");
+    assert_eq!(advice.alternatives.len(), 3, "una alternativa por carta");
+    assert!(
+        advice.alternatives.iter().all(|(_, p)| (0.0..=1.0).contains(p)),
+        "las probabilidades tienen que estar en rango"
+    );
+}
+
+#[test]
+fn las_alternativas_vienen_ordenadas() {
+    let my_hand = mano_33();
+    let model = OpponentModel::neutral();
+    let belief = belief_for(my_hand, true, model);
+    let advice = advisor(model, Score { a: 0, b: 0 }, true).best_play(my_hand, None, 0, 0, &belief);
+
+    for pair in advice.alternatives.windows(2) {
+        assert!(pair[0].1 >= pair[1].1, "ordenadas de mejor a peor: {pair:?}");
+    }
+    assert_eq!(advice.alternatives[0].0, advice.card.expect("hay recomendación"));
+}
+
+/// El hallazgo central del proyecto: **tener la mejor carta no es lo mismo que
+/// jugarla de primera**.
+///
+/// Con el 7 de espadas (la más fuerte del mazo), el 6 de espadas y un 3 de
+/// copas, guiar el 6 gana más veces que guiar el 7. El 7 intomable en la mesa
+/// vale menos gastado en la primera que guardado: si no lo tirás ahora, todavía
+/// puede ganar una baza más adelante.
+///
+/// Nadie escribió esta regla. Sale de promediar el minimax exacto sobre la
+/// belief del rival.
+#[test]
+fn con_el_7_de_espadas_conviene_no_tirarlo_de_primera() {
+    let my_hand = mano_33();
+    let model = OpponentModel::neutral();
+    let belief = belief_for(my_hand, true, model);
+    let advice = advisor(model, Score { a: 0, b: 0 }, true).best_play(my_hand, None, 0, 0, &belief);
+
+    let p_de = |nombre: &str| {
+        advice
+            .alternatives
+            .iter()
+            .find(|(c, _)| c.to_string() == nombre)
+            .map(|(_, p)| *p)
+            .unwrap_or_else(|| panic!("falta la alternativa {nombre}"))
+    };
+
+    let siete = p_de("7 de Espadas");
+    let seis = p_de("6 de Espadas");
+
+    assert!(
+        seis > siete,
+        "el 6 tiene que ganarle al 7 como salida: {seis:.3} contra {siete:.3}"
+    );
+    assert!(
+        seis - siete > 0.02,
+        "la diferencia tiene que ser relevante, no ruido: {seis:.3} contra {siete:.3}"
+    );
+    assert_eq!(
+        advice.card.expect("hay recomendación").to_string(),
+        "6 de Espadas",
+        "la recomendación tiene que ser el 6"
+    );
+}
+
+#[test]
+fn responder_devuelve_alternativas_validas() {
+    let my_hand = mano_33();
+    let model = OpponentModel::neutral();
+    let belief = belief_for(my_hand, true, model);
+    let salida = truco_core::cards::parse_card("4 de oros").unwrap();
+    let advice =
+        advisor(model, Score { a: 0, b: 0 }, true).best_play(my_hand, Some(salida), 0, 0, &belief);
+
+    let card = advice.card.expect("hay respuesta");
+    assert!(my_hand.contains(card));
+    assert_eq!(advice.alternatives.len(), 3);
+    assert!(advice.reasons.iter().any(|r| r.contains("respondés")));
+}
+
+#[test]
+fn saber_las_bazas_marcadas_cambia_el_mensaje() {
+    let my_hand = mano_33();
+    let model = OpponentModel::neutral();
+    let belief = belief_for(my_hand, true, model);
+    let arriba = advisor(model, Score { a: 0, b: 0 }, true).best_play(my_hand, None, 1, 0, &belief);
+    assert!(arriba.reasons.iter().any(|r| r.contains("solo necesitás una")));
+
+    let abajo = advisor(model, Score { a: 0, b: 0 }, true).best_play(my_hand, None, 0, 1, &belief);
+    assert!(abajo.reasons.iter().any(|r| r.contains("si perdés esta")));
+}
+
+/// El promedio tiene que ser una probabilidad de verdad: si la belief dice que
+/// el rival tiene una mano imposible, la confianza no puede ser 1.
+#[test]
+fn la_confianza_nunca_es_uno_con_rival_desconocido() {
+    let my_hand = mano_33();
+    let model = OpponentModel::neutral();
+    let belief = belief_for(my_hand, true, model);
+    let advice = advisor(model, Score { a: 0, b: 0 }, true).best_play(my_hand, None, 0, 0, &belief);
+
+    assert!(
+        advice.win_prob < 0.999,
+        "con 489 manos posibles no se puede estar seguro: dio {}",
+        advice.win_prob
+    );
+    assert!(advice.win_prob > 0.5, "esa mano tiene que ganar más de la mitad: {}", advice.win_prob);
+}
+
 #[test]
 fn observar_al_rival_concentra_y_cambia_el_calculo() {
     let my_hand = mano_27();

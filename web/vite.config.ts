@@ -11,4 +11,10 @@ export default defineConfig({
     port: 5173,
     host: true,
   },
+  preview: {
+    port: 4173,
+    // `host: true` para que se pueda abrir desde el teléfono en la misma red.
+    // Es la vía para probar la app en la mesa antes de publicarla.
+    host: true,
+  },
 });

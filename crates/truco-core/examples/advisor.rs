@@ -104,6 +104,24 @@ fn main() {
     }
     println!();
 
+    println!("qué carta jugar:");
+    let inicio = std::time::Instant::now();
+    let juego = advisor.best_play(mi_mano, None, 0, 0, &belief);
+    let consejo_ms = inicio.elapsed().as_millis();
+
+    match juego.card {
+        Some(carta) => println!("  jugá {carta} ({} % de ganar la mano)", (juego.win_prob * 100.0).round()),
+        None => println!("  no hay nada que recomendar"),
+    }
+    println!("  alternativas:");
+    for (carta, p) in &juego.alternatives {
+        println!("    {carta:<22} {:>5.1} %", p * 100.0);
+    }
+    for razon in &juego.reasons {
+        println!("  · {razon}");
+    }
+    println!("  ({} ms)", consejo_ms);
+
     println!("otros escenarios, para ver cómo cambia:");
     for cartas in [
         ["7 de espada", "6 de espada", "3 de copa"],

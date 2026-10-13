@@ -8,7 +8,7 @@ de policy del envido) y 4 (PWA advisor).
 ## Cómo trabajar acá
 
 ```bash
-cargo test --release                  # 226 tests, ~80 s
+cargo test --release                  # 234 tests, ~80 s
 cargo clippy --all-targets --release # tiene que salir limpio
 node scripts/check-encoding.mjs       # avisa si se cuelan caracteres raros
 cargo run --release -p gen-tables    # regenera los dos binarios (~40 s)
@@ -28,11 +28,11 @@ Todo lo de arriba se ejecutó y pasó, no según el reporte de la sesión anteri
 
 | Chequeo | Resultado |
 |---|---|
-| `cargo test --release` | 226 / 226 verdes, 0 fallados, 80 s |
+| `cargo test --release` | 234 / 234 verdes, 0 fallados, 80 s |
 | `cargo clippy --all-targets --release` | 0 warnings |
-| `node scripts/check-encoding.mjs` | 27 archivos, 9.210 líneas, limpio |
+| `node scripts/check-encoding.mjs` | 27 archivos, 9.654 líneas, limpio |
 | `cargo run --release -p gen-tables` | 8/8 invariantes de probabilidad + 6/6 de policy |
-| `npm run verify` (en `web/`) | build limpio + **19/19** de la prueba de humo del wasm |
+| `npm run verify` (en `web/`) | build limpio + **29/29** de la prueba de humo del wasm |
 
 Los dos generadores son **deterministas**, así que `.gitignore` los excluye sin
 riesgo: no hay información que se pierda, se reconstruye exacta.
@@ -176,8 +176,8 @@ cargo run --release -p truco-core --example debug_endgame  # desglose de líneas
 | 2 · Belief + modelo de rival | ✅ | Falta **ajustar** los pesos del modelo a datos reales |
 | 3 · CFR del envido | ✅ | — |
 | 3b · Tabla de policy | ✅ | — |
-| 4a · Advisor (decisión de envido) | ✅ | Falta el consejo de bazas |
-| 4b · PWA | ✅ | Falta el consejo de bazas y la resolución del envido |
+| 4a · Advisor (envido y bazas) | ✅ | Falta la resolución del envido en la partida |
+| 4b · PWA | ✅ | Falta la resolución del envido en la partida |
 
 ## Fase 4a · el advisor
 
@@ -211,8 +211,33 @@ cargo run --release -p truco-core --example advisor
 cargo run --release -p truco-core --example advisor -- "4 de oros,3 de oros,2 de bastos" 10 20 shark
 ```
 
-Todavía no cubre el consejo de bazas, que necesita las tablas de probabilidad
-y promediar el minimax sobre la belief en vez de usar una mano rival fija.
+Todavía no cubre la resolución del envido durante la partida, que requiere el
+estado completo y tiene el problema de la mano desconocida del rival.
+
+### El consejo de bazas
+
+`Advisor::best_play` promedia el minimax exacto sobre la belief: para cada mano
+posible del rival corre el solver y promedia con el peso de la belief. No es
+"qué carta es más fuerte", es "qué carta me deja ganar más veces, sabiendo lo
+poco que sé de él".
+
+**Agrupar por perfil es lo que lo hace barato.** El resultado de una baza
+depende solo de las clases de fuerza, así que las 7.770 manos colapsan en como
+máximo 589 perfiles. Sin eso serían 23.310 evaluaciones del minimax; con eso,
+**7 ms**.
+
+Eso hace emerger el **no tirar más** sin escribir la regla a mano. Con
+`7 de Espadas / 6 de Espadas / 3 de Copas` el consejo dice:
+
+| carta | % de ganar la mano |
+|---|---|
+| **6 de Espadas** | **84,1 %** |
+| 3 de Copas | 81,5 % |
+| 7 de Espadas | 79,1 % |
+
+Tenés la carta más fuerte del mazo y te dice que no la tires de primera. El 7
+intomable en la mesa vale menos gastado en la primera que guardado: si no lo
+tirá, todavía puede ganar una baza después.
 
 ## Fase 4b · la PWA
 
@@ -348,6 +373,18 @@ exactamente la resolución de la cuantización a `u16`.
    lo encontraba. Quien lo usara sin fijarse en el `None` caía en silencio al
     modelo promedio: el advisor parecía estar usando el perfil del tiburón y
    usaba el de todos. Ahora hay alias.
+11. **La baza ya ganada se pisaba en `best_lead`.** El código armaba el prefijo
+    con la baza ganada en `results[0]` y después escribía el resultado de la
+    baza actual **también** en `results[0]`. Con `my_wins = 1` y guiando, que es
+    exactamente el caso de "ya gané la primera y me toca salir", el solver creía
+    que la había perdido. El escenario del *no tirar más*, que es el consejo más
+    valioso, estaba calculándose sobre un estado roto.
+
+    Lo protective un test diferencial contra `trick_endgame_value`, que sí
+    arma el prefijo bien y ya está validado por los 7 chequeos del generador:
+    9.555 combinaciones de pares de clases, todas tienen que coincidir. Es el
+    oráculo correcto para un differential porque es la primitiva que **construye
+    la tabla T3**.
 
 ## Decisiones pendientes
 

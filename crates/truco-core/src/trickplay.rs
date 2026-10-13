@@ -90,14 +90,107 @@ pub fn trick_endgame_value(
     minimax(&my_cards, &their_cards, leader, &mut results, 1, mano)
 }
 
+/// Las bazas ya jugadas, listas para seguir desde la actual.
+///
+/// `my_wins` y `their_wins` van en 0..=1 porque esta es la etapa de endgame:
+/// después de la segunda baza la mano ya se resolvió.
+#[inline]
+fn prefix(my_wins: usize, their_wins: usize) -> [BazaResult; BAZAS_PER_HAND] {
+    let mut results = [BazaResult::Parda; BAZAS_PER_HAND];
+    if my_wins > 0 {
+        results[0] = BazaResult::Win;
+    }
+    if their_wins > 0 {
+        results[0] = BazaResult::Loss;
+    }
+    results
+}
+
+/// Valor de cada una de mis cartas **como guía**, desde la perspectiva del 0.
+///
+/// Un valor por elemento de `mine`. El rival responde adversarialmente: puede
+/// elegir qué carta sacrificar, y esa elección es la que decide la baza. Por eso
+/// se recorren todas sus respuestas y se toma la peor para nosotros.
+pub fn lead_values(
+    mine: &[Card],
+    theirs: &[Card],
+    my_wins: usize,
+    their_wins: usize,
+    mano: usize,
+) -> Vec<bool> {
+    let base = prefix(my_wins, their_wins);
+    let played = my_wins + their_wins;
+
+    (0..mine.len())
+        .map(|index| {
+            let rest = without(mine, index);
+            let mut worst: Option<bool> = None;
+            for follow_index in 0..theirs.len() {
+                let outcome = BazaResult::from_play(0, mine[index], theirs[follow_index]);
+                // Ojo: la baza actual va en `played`, NO en `results[0]`. Si
+                // hubiéramos ganado la primera y escribimos acá, la pisábamos
+                // y el solver creía que la habíamos perdido.
+                let mut next = base;
+                next[played] = outcome;
+                let next_leader = match outcome {
+                    BazaResult::Win => 0,
+                    BazaResult::Loss => 1,
+                    BazaResult::Parda => 0,
+                };
+                let child = minimax(
+                    &rest,
+                    &without(theirs, follow_index),
+                    next_leader,
+                    &mut next,
+                    played + 1,
+                    mano,
+                );
+                worst = Some(combine(false, worst, child));
+            }
+            worst.expect("el rival siempre tiene cartas")
+        })
+        .collect()
+}
+
+/// Valor de cada una de mis cartas **como respuesta** a `lead`.
+///
+/// `lead` es la carta que guió el rival, ya jugada. `theirs` son las cartas que
+/// le quedan **después** de jugar `lead`, porque es lo que hay en la mesa para
+/// el resto de la mano.
+pub fn follow_values(
+    mine: &[Card],
+    theirs: &[Card],
+    lead: Card,
+    my_wins: usize,
+    their_wins: usize,
+    mano: usize,
+) -> Vec<bool> {
+    let base = prefix(my_wins, their_wins);
+    let played = my_wins + their_wins;
+
+    (0..mine.len())
+        .map(|index| {
+            let outcome = BazaResult::from_play(1, lead, mine[index]);
+            let mut next = base;
+            next[played] = outcome;
+            let next_leader = match outcome {
+                BazaResult::Win => 0,
+                BazaResult::Loss => 1,
+                BazaResult::Parda => 1,
+            };
+            minimax(&without(mine, index), theirs, next_leader, &mut next, played + 1, mano)
+        })
+        .collect()
+}
+
 /// Qué carta conviene guiar para ganar.
 ///
-/// Devuelve el índice dentro de `mine` de la mejor jugada del jugador 0 en el
-/// endgame. Es la consulta que hace el advisor, y la que hace emerger el
-/// "no tirar más" sin escribir la regla a mano: si ya ganaste la primera, la
-/// respuesta suele ser la carta más débil.
+/// Devuelve el índice dentro de `mine` de la mejor jugada del jugador 0. Es la
+/// consulta que hace el advisor, y la que hace emerger el "no tirar más" sin
+/// escribir la regla a mano: si ya ganaste la primera, la respuesta suele ser la
+/// carta más débil.
 ///
-/// `None` si la mano ya está perdida o ganada sin más juego.
+/// `None` si no estamos guiando.
 pub fn best_lead(
     mine: &[Card],
     theirs: &[Card],
@@ -109,44 +202,8 @@ pub fn best_lead(
     if leader != 0 {
         return None; // solo tiene sentido cuando guiamos nosotros
     }
-    let mut best: Option<(bool, usize)> = None;
-    for index in 0..mine.len() {
-        let rest: Vec<Card> = without(mine, index);
-        let mut results = [BazaResult::Parda; BAZAS_PER_HAND];
-        for _ in 0..my_wins {
-            results[0] = BazaResult::Win;
-        }
-        for _ in 0..their_wins {
-            results[0] = BazaResult::Loss;
-        }
-        // El follower **elige qué carta sacrificar**, y esa elección decide la
-        // baza. Por eso se recorren todas sus respuestas y se toma la peor
-        // para nosotros: no juega su mejor carta, juega la que le convenga.
-        let mut worst: Option<bool> = None;
-        for follow_index in 0..theirs.len() {
-            let child = {
-                let their_rest = without(theirs, follow_index);
-                let outcome = BazaResult::from_play(0, mine[index], theirs[follow_index]);
-                results[0] = outcome;
-                let next_leader = match outcome {
-                    BazaResult::Win => 0,
-                    BazaResult::Loss => 1,
-                    BazaResult::Parda => 0,
-                };
-                let mut next = results;
-                next[1] = outcome;
-                minimax(&rest, &their_rest, next_leader, &mut next, 1, mano)
-            };
-            worst = Some(combine(false, worst, child));
-        }
-        let value = worst.unwrap();
-        best = Some(match best {
-            None => (value, index),
-            Some((previous, _)) if value && !previous => (value, index),
-            Some(previous) => previous,
-        });
-    }
-    best.map(|(_, index)| index)
+    let values = lead_values(mine, theirs, my_wins, their_wins, mano);
+    values.iter().position(|gana| *gana).or(if values.is_empty() { None } else { Some(0) })
 }
 
 /// Minimax de las bazas. `results[..played]` ya está resuelto.
@@ -447,5 +504,80 @@ fn tres_seises_ganan_a_un_ancho_mas_dos_garbage() {
         );
         assert!(value, "con un 1 de espadas en reserva la mano es segura");
         let _ = (mine, theirs);
+    }
+
+    /// Diferencial contra el solver del endgame, que ya está validado.
+    ///
+    /// `trick_endgame_value` arma la tabla T3 y pasa los 7 chequeos del
+    /// generador. `lead_values` es el camino nuevo, y manejan el prefijo de bazas
+    /// de forma distinta: el primero escribe la baza ya jugada en
+    /// `results[played]` y el segundo la tenía en `results[0]`. Si el índice se
+    ///calcula mal,+pisamos la baza ganada y el solver cree que la perdimos.
+    ///
+    /// El caso que importa es **`my_wins = 1` y guiando**: ganaste la primera y
+    /// la estás guiando. Antes `best_lead` escribía el resultado de la baza
+    /// actual en `results[0]` y perdía de vista la primera.
+    #[test]
+    fn lead_values_coincide_con_el_solver_del_endgame() {
+        use crate::profiles::profile2_of;
+
+        let mut chequeadas = 0usize;
+        for a in 0..15u8 {
+            for b in (a + 1)..15u8 {
+                let mine = [representative(a), representative(b)];
+                let mio = profile2_of(mine);
+                for c in 0..15u8 {
+                    if c == a || c == b {
+                        continue;
+                    }
+                    for d in (c + 1)..15u8 {
+                        let theirs = [representative(c), representative(d)];
+                        let suyo = profile2_of(theirs);
+                        let values = lead_values(&mine, &theirs, 1, 0, 0);
+                        let oraculo = trick_endgame_value(&mio, &suyo, 0, 1, 0, 0);
+                        assert_eq!(
+                            values[0], oraculo,
+                            "mis clases {a},{b} contra {c},{d}: lead_values {} contra endgame {}",
+                            values[0], oraculo
+                        );
+                        chequeadas += 1;
+                    }
+                }
+            }
+        }
+        assert!(chequeadas > 9_000, "solo se probaron {chequeadas} combinaciones");
+    }
+
+    /// Responder a un canto: el caso donde **tirar la mejor carta es perder la
+    /// mano**.
+    ///
+    /// Él guía con un 4 de oros, que es de lo más flojo del mazo. Tengo el 1 de
+    /// espadas (que le gana a todo) y dos cartas que también lo matan. Jugando
+    /// el 1 me quedo sin intomable para la tercera y él me gana las dos que
+    /// faltan con el 7 de copas.
+    #[test]
+    fn responder_a_un_canto_no_es_tirar_siempre_la_mejor() {
+        let lead = parse_card("4 de oros").unwrap();
+        let uno = parse_card("1 de espada").unwrap();
+        let cinco = parse_card("5 de oros").unwrap();
+        let seis = parse_card("6 de oros").unwrap();
+        let mine = [cinco, uno, seis];
+
+        // Las dos cartas que le quedan al rival después de su salida.
+        let suyas = [parse_card("3 de espada").unwrap(), parse_card("7 de copas").unwrap()];
+
+        let values = follow_values(&mine, &suyas, lead, 0, 0, 0);
+        assert_eq!(values.len(), 3);
+        assert!(values[0], "con un 5 me queda el 1 para la tercera y gano igual");
+        assert!(
+            !values[1],
+            "tirar el 1 de espadas ahora me deja sin nada contra el 7 de copas"
+        );
+        assert!(values[2], "con un 6 también me queda el 1 y gano");
+        assert_eq!(
+            best_lead(&mine, &suyas, 1, 0, 0, 0),
+            None,
+            "best_lead no aplica cuando no guiamos"
+        );
     }
 }

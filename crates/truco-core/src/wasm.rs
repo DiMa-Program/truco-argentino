@@ -250,13 +250,55 @@ impl Truco {
         serde_json::to_string(&json).map_err(js)
     }
 
+/// Qué carta jugar en la baza en curso.
+///
+/// `lead_card` es `null` si me toca guiar, o el índice de la carta que ya jugó
+/// el rival. `my_wins` y `their_wins` son las bazas ya decididas (0 o 1).
+#[wasm_bindgen(js_name = bestPlay)]
+    pub fn best_play(
+        &self,
+        lead_card: Option<u8>,
+        my_wins: u8,
+        their_wins: u8,
+    ) -> Result<String, JsError> {
+        let (hand, state) = self.hand_and_state()?;
+        let policy = self.policy.as_ref().ok_or_else(|| JsError::new("falta la policy"))?;
+        let belief = state.compute(&self.model);
+        let advisor = Advisor { policy, model: self.model, config: self.config, score: self.score, i_am_mano: self.i_am_mano };
+        let advice =
+            advisor.best_play(hand, lead_card.map(Card::from_index), my_wins as usize, their_wins as usize, &belief);
+
+        let json = PlayJson {
+            card: advice.card.map(|c| c.to_string()),
+            win_prob: advice.win_prob,
+            alternatives: advice
+                .alternatives
+                .iter()
+                .map(|(c, p)| (c.to_string(), *p))
+                .collect(),
+            reasons: advice.reasons,
+        };
+        serde_json::to_string(&json).map_err(js)
+    }
+
     /// Las 40 cartas con su nombre corto, para que la UI no las tenga que
     /// hardcodear.
     pub fn deck(&self) -> Result<String, JsError> {
-        let cards: Vec<CardJson> =
+        let cartas: Vec<CardJson> =
             (0..40u8).map(|i| CardJson { index: i, name: Card::from_index(i).to_string() }).collect();
-        serde_json::to_string(&cards).map_err(js)
+        serde_json::to_string(&cartas).map_err(js)
     }
+}
+
+#[derive(serde::Serialize)]
+struct PlayJson {
+    /// Nombre de la carta recomendada, si hay.
+    card: Option<String>,
+    /// Probabilidad de ganar la mano con esa carta.
+    win_prob: f64,
+    /// Todas las candidatas con su probabilidad.
+    alternatives: Vec<(String, f64)>,
+    reasons: Vec<String>,
 }
 
 #[derive(serde::Serialize)]

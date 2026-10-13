@@ -36,11 +36,14 @@
 
 use crate::bets::{EnvidoCall, EnvidoSeq};
 use crate::belief::Belief;
+use crate::cards::Card;
 use crate::envido_policy::EnvidoPolicy;
 use crate::hand::Hand3;
 use crate::opponent::{envido_accept_likelihood, OpponentModel};
+use crate::profiles::{profile3_index, profile3_of, Profile3};
 use crate::scoring::{falta_terms, MatchConfig, Score};
 use crate::testutil::catalog_ref;
+use crate::trickplay;
 
 /// Qué se puede hacer en el nodo de apertura del envido.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -111,12 +114,24 @@ pub struct EnvidoAdvice {
     pub reasons: Vec<String>,
 }
 
+/// Qué carta conviene jugar, y con cuánta confianza.
+#[derive(Clone, Debug)]
+pub struct PlayAdvice {
+    /// La carta a jugar. `None` si no hay nada que recomendar.
+    pub card: Option<Card>,
+    /// Probabilidad de ganar la mano con esa carta.
+    pub win_prob: f64,
+    /// Todas las candidatas con su probabilidad, de mejor a peor.
+    pub alternatives: Vec<(Card, f64)>,
+    /// Una línea por idea, en castellano.
+    pub reasons: Vec<String>,
+}
+
 /// El advisor. Solo lee: no toca el marcador ni el estado de la mano.
 ///
-/// No depende de [`Tables`] a propósito: el consejo del envido sale entero de
-/// la belief, el modelo del rival, el marcador y la policy de equilibrio. Las
-/// tablas de probabilidad entran recién cuando el consejo incluya qué carta
-/// jugar, y para eso hacen falta de verdad.
+/// No depende de [`Tables`](crate::tables::Tables) a propósito: tanto el
+/// consejo del envido como el de bazas salen de la belief, el modelo del rival,
+/// el marcador, la policy de equilibrio y el minimax exacto.
 pub struct Advisor<'a> {
     pub policy: &'a EnvidoPolicy,
     pub model: OpponentModel,
@@ -320,6 +335,121 @@ impl Advisor<'_> {
             points_at_stake,
             reasons,
         }
+    }
+
+    /// Qué carta jugar en la baza en curso.
+    ///
+    /// `lead_card` es `None` si me toca **guiar**. Si no, es la carta que ya
+    /// jugó el rival.
+    ///
+    /// El cálculo es un promedio bayesiano del minimax exacto sobre la belief:
+    /// para cada mano posible del rival se corre el solver y se promedia con el
+    /// peso de la belief. No es "qué carta es más fuerte": es "qué carta me
+    /// deja ganar más veces, sabiendo lo poco que sé de él".
+    ///
+    /// Lo que hace aparecer el **no tirar más** sin escribir la regla a mano es
+    /// que el solver ya sabe que el rival elige **qué carta sacrificar** cuando
+    /// responde, y que con una baza ganada solo falta una.
+    pub fn best_play(
+        &self,
+        my_hand: Hand3,
+        lead_card: Option<Card>,
+        my_wins: usize,
+        their_wins: usize,
+        belief: &Belief,
+    ) -> PlayAdvice {
+        let mano = usize::from(self.i_am_mano);
+        let mine = my_hand.cards();
+
+        // Las manos del rival colapsan por perfil de fuerza: el resultado de
+        // una baza depende solo de las clases, no de qué carta concreta es.
+        // 7.770 candidatos se vuelven como mucho 589 evaluaciones del solver.
+        let mut peso_por_perfil = vec![0.0f64; crate::profiles::all_profiles3().len()];
+        for (index, peso) in belief.iter_candidates() {
+            let perfil = profile3_of(*catalog_ref()[index].cards());
+            if let Some(p) = profile3_index(&perfil) {
+                peso_por_perfil[p] += peso;
+            }
+        }
+        let perfiles: Vec<(Profile3, f64)> = crate::profiles::all_profiles3()
+            .iter()
+            .zip(peso_por_perfil.iter())
+            .filter(|(_, peso)| **peso > 1e-12)
+            .map(|(p, peso)| (*p, *peso))
+            .collect();
+
+        let mut sumas = vec![0.0f64; mine.len()];
+
+        for (perfil, peso) in &perfiles {
+            let theirs = perfil.iter().map(|c| trickplay::representative(*c)).collect::<Vec<_>>();
+            let valores = match lead_card {
+                None => trickplay::lead_values(mine, &theirs, my_wins, their_wins, mano),
+                Some(lead) => {
+                    // Para el solver solo quedan las cartas que el rival todavía
+                    // no jugó.
+                    let restantes: Vec<Card> = theirs.iter().copied().filter(|c| *c != lead).collect();
+                    if restantes.len() + 1 != theirs.len() {
+                        continue; // la salida no era de esta mano candidata
+                    }
+                    trickplay::follow_values(mine, &restantes, lead, my_wins, their_wins, mano)
+                }
+            };
+            for (i, gana) in valores.iter().enumerate() {
+                sumas[i] += peso * (*gana as u8 as f64);
+            }
+        }
+
+        let mut alternativas: Vec<(Card, f64)> =
+            mine.iter().copied().zip(sumas.iter().copied()).collect();
+        alternativas.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.index().cmp(&b.0.index())));
+
+        let card = alternativas.first().map(|(c, _)| *c);
+        let win_prob = alternativas.first().map(|(_, p)| *p).unwrap_or(0.0);
+
+        let reasons = self.play_reasons(&alternativas, lead_card, my_wins, their_wins, &perfiles);
+
+        PlayAdvice { card, win_prob, alternatives: alternativas, reasons }
+    }
+
+    fn play_reasons(
+        &self,
+        alternativas: &[(Card, f64)],
+        lead_card: Option<Card>,
+        my_wins: usize,
+        their_wins: usize,
+        perfiles: &[(Profile3, f64)],
+    ) -> Vec<String> {
+        let mut out = Vec::new();
+        let quien = if lead_card.is_none() { "guiás" } else { "respondés" };
+        out.push(format!(
+            "{quien} con {} manos distintas del rival todavía posibles",
+            perfiles.len()
+        ));
+        if let Some((card, p)) = alternativas.first() {
+            out.push(format!(
+                "la mejor es {card}: ganás la mano el {:.0} % de las veces",
+                p * 100.0
+            ));
+        }
+        if let Some(mayor) = alternativas.last() {
+            if let Some((_, mejor_p)) = alternativas.first() {
+                if mejor_p - mayor.1 > 0.05 {
+                    out.push(format!(
+                        "la peor es {} ({:.0} %): {} puntos de diferencia",
+                        mayor.0,
+                        mayor.1 * 100.0,
+                        ((mejor_p - mayor.1) * 100.0).round()
+                    ));
+                }
+            }
+        }
+        if my_wins == 1 {
+            out.push("ya ganaste una baza: solo necesitás una más".to_string());
+        }
+        if their_wins == 1 {
+            out.push("él ya ganó una baza: si perdés esta, la pierde él".to_string());
+        }
+        out
     }
 
     /// Las líneas de explicación, en castellano, una por opción.

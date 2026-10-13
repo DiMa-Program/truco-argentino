@@ -346,6 +346,38 @@ section {
   color: var(--tenue);
 }
 
+/* --- Juego ------------------------------------------------------------- */
+
+.fila-turno {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.6rem;
+  align-items: center;
+}
+
+.boton.chico {
+  min-height: 2.2rem;
+  font-size: 0.85rem;
+  padding: 0.3rem 0.7rem;
+}
+
+.boton.chico.activo {
+  background: var(--dorado);
+  border-color: var(--dorado);
+  color: #141414;
+  font-weight: 700;
+}
+
+.fila-puntos.bazas {
+  grid-template-columns: auto 2.4rem 2rem 2.4rem auto 2.4rem 2rem 2.4rem;
+  align-items: center;
+}
+
+.fila-puntos.bazas .puntos {
+  font-size: 1.05rem;
+}
+
 @media (min-width: 30rem) {
   .grilla {
     grid-template-columns: repeat(8, 1fr);

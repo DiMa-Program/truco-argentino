@@ -116,6 +116,44 @@ try {
 }
 chequeo(erroBien, "una mano con carta repetida da error, no un valor raro");
 
+// --- Qué carta jugar -----------------------------------------------------
+
+motor.setScore(0, 0);
+motor.setModel(0);
+motor.setMano(true);
+motor.setHand(Uint8Array.from([6, 5, 22])); // 7e + 6e + 3c
+
+const t0 = process.hrtime.bigint();
+const juego = JSON.parse(motor.bestPlay(undefined, 0, 0));
+const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+
+chequeo(juego.card !== null, "siempre recomienda una carta", `devolvió ${juego.card}`);
+chequeo(juego.alternatives.length === 3, "trae las tres alternativas", `trae ${juego.alternatives.length}`);
+chequeo(
+  juego.alternatives.every(([, p]) => p >= 0 && p <= 1),
+  "las probabilidades están en rango",
+);
+chequeo(juego.reasons.length > 0, "trae explicación del consejo");
+
+// El hallazgo central: con el 7 de espadas en la mano, NO conviene jugarlo de
+// primera. Si el wasm no coincide con el advisor en Rust, esto se rompe.
+const pDe = (n) => juego.alternatives.find(([nombre]) => nombre === n)?.[1];
+chequeo(
+  pDe("6 de Espadas") > pDe("7 de Espadas"),
+  "con el 7 conviene guiar el 6, no el 7",
+  `6: ${pDe("6 de Espadas")} contra 7: ${pDe("7 de Espadas")}`,
+);
+chequeo(juego.card === "6 de Espadas", "y la recomendación es efectivamente el 6", `dijo ${juego.card}`);
+chequeo(ms < 100, `responde en menos de 100 ms (${ms.toFixed(1)} ms)`);
+
+// Responder a una salida también tiene que andar.
+const respondiendo = JSON.parse(motor.bestPlay(3, 0, 0)); // él guiaría con un 4 de oros
+chequeo(respondiendo.card !== null, "responder también devuelve carta");
+chequeo(
+  respondiendo.alternatives.length === 3,
+  "responder trae las tres alternativas",
+);
+
 motor.free();
 console.log(fallos === 0 ? "\ntodo bien" : `\n${fallos} comprobaciones fallaron`);
 process.exit(fallos === 0 ? 0 : 1);

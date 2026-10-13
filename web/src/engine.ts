@@ -42,6 +42,13 @@ export interface Advice {
   reasons: string[];
 }
 
+export interface PlayAdvice {
+  card: string | null;
+  win_prob: number;
+  alternatives: [string, number][];
+  reasons: string[];
+}
+
 /** La clase que exporta wasm-bindgen. Se tipa acá a mano: no hay tipos. */
 interface TrucoWasm {
   free(): void;
@@ -59,6 +66,7 @@ interface TrucoWasm {
     bazasMias: number,
     bazasSuyas: number,
   ): void;
+  bestPlay(leadCard: number | undefined, myWins: number, theirWins: number): string;
   isReady(): boolean;
   snapshot(): string;
   advice(): string;
@@ -136,6 +144,13 @@ export class Engine {
 
   get advice(): Advice {
     return JSON.parse(this.#requiere().advice()) as Advice;
+  }
+
+  /** Qué carta jugar. `leadCard` es `undefined` si me toca guiar. */
+  bestPlay(leadCard: number | undefined, myWins: number, theirWins: number): PlayAdvice {
+    return JSON.parse(
+      this.#requiere().bestPlay(leadCard, myWins, theirWins),
+    ) as PlayAdvice;
   }
 
   #requiere(): TrucoWasm {
