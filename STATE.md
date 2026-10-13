@@ -86,11 +86,24 @@ cargo run --release -p truco-core --example debug_endgame  # desglose de líneas
 - **Falta envido**: en las malas vale el partido entero para quien la gane.
   Con alguna de las dos en buenas vale `objetivo − quien va primero`, y si la
   gana el que va segundo **no le alcanza para cerrar** (a 20-10 en un partido a
-  30 queda en 20). Esto viene de la tabla oficial y es contraintuitivo; hay
-  variantes regionales. **Pendiente: confirmar con la mesa del usuario.**
+  30 queda en 20). Es contraintuitivo. **Confirmado contra el reglamento
+  oficial** y contra la mesa del usuario.
+- **Envido primero: divergencia deliberada del reglamento.** El reglamento
+  oficial dice que cantar TRUCO elimina el envido. Este proyecto mantiene el
+  **envido primero**: se puede envidar en respuesta al truco antes de
+  aceptarlo o rechazarlo (`Action::EnvidoFirst`). Es lo que hacen GGTruco,
+  TrucoBits y casi todas las plataformas online, que es donde se juega. Si
+  alguna vez se cambia, es una decisión consciente y no un "arreglo" del
+  reglamento.
+- **Pasar / irse al mazo no está implementado, a propósito.** En 1v1 pasar
+  significa que el rival juegue las dos bazas restantes solo y gane la mano:
+  siempre peor que jugar, no aporta información porque igual mostrás la mano al
+  final. Es una mecánica de 2v2. No es un bug pendiente.
 - **32 solo es 7+5.** No existen dos 6es del mismo palo, así que "32 de dos
   seises" es imposible. Hay exactamente **152** manos con 33 (1,54 %).
 - El rey le gana al 6, al 5 y al 4. "Número grande" no es "más fuerte".
+- **Valores de la escalera**: 21, 31, 42, 52, 74, y las que terminan en falta
+  toman el valor de la falta. Verificados contra el reglamento.
 
 ### Motor
 
@@ -181,13 +194,18 @@ policy, solo los `Continue`.
 
 ## Decisiones pendientes
 
-- **Regla de falta envido de la mesa**. Implementé la oficial. Bloquea si tu
-  mesa juega distinto.
+- **Flor: el gap más grande que queda.** No es "casi siempre 2v2" ni
+  opcional: en 1v1 el reglamento dice que si uno tiene flor y el otro no, el
+  que la tiene **gana 3 puntos**, que **la flor es obligada cantarla**, y que
+  **el envite queda anulado**. Son 3 puntos que hoy el advisor ni menciona.
+  `hand.rs` ya tiene `has_flor()` / `flor()` y `belief.rs` ya tiene
+  `Observation::HasFlor` / `p_flor()`, pero `match_state.rs::Action` no tiene
+  ninguna acción de flor. Falta: acción de cantar flor, resolución de flor vs
+  sin flor, y la cascada de contraflor / con flor quiero / flor me achico /
+  contraflor al resto si se quiere cubrir el reglamento completo.
 - **Tabla precomputada de policy del envido**: el solver existe pero falta
   serializar las 51 x 8 celdas para que el advisor no resuelva en el teléfono.
 - **Ajustar los pesos del modelo de rival** con partidas reales. Es la mayor
   ganancia pendiente.
-- **Flor**: detección y valor listos; la apuesta no está en la máquina de
-  estados. Opcional en Argentina, casi siempre 2v2.
 - Fuera de alcance: 2v2 con señas, 3v3 pica pica, OCR de pantalla, modo mazo
-  barajado.
+  barajado, y la mecánica de pasar / irse al mazo (no aplica en 1v1).
