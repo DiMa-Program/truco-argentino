@@ -13,8 +13,10 @@
 //!
 //! - **16 clases de fuerza en vez de 15**: el as de copas y el as de oros
 //!   comparten clase.
-//! - **"Gana el que ganó la primera baza"**: en realidad gana el ganador de la
-//!   última baza no empatada; solo si la tercera fue parda da igual.
+//! - **La regla de la parda**: no es "gana el que ganó la primera" ni "gana el
+//!   que ganó la última no parda". Gana el que juntó **dos** bazas; los empates
+//!   1-1 los define la tercera, o la primera si la tercera fue parda. Ver
+//!   [`rules`] para la tabla completa.
 //! - **La falta envido cerrando siempre el partido**: solo lo hace si ambos
 //!   están en las malas, o si la gana el puntero.
 //!

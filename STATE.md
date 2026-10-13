@@ -2,18 +2,37 @@
 
 Motor de truco argentino + advisor GTO. **1v1, PWA offline.**
 
-Última actualización: Fase 2 completa, Fase 3 en curso.
+Última actualización: Fases 0 a 3 completas y verificadas. Pendientes: 3b (tabla
+de policy del envido) y 4 (PWA advisor).
 
 ## Cómo trabajar acá
 
 ```bash
-cargo test --release                  # 175 tests, ~55 s
+cargo test --release                  # 188 tests, ~62 s
 cargo clippy --all-targets --release # tiene que salir limpio
 node scripts/check-encoding.mjs       # avisa si se cuelan caracteres raros
-cargo run --release -p gen-tables    # regenera tables/truco-v1.bin (19 s)
+cargo run --release -p gen-tables    # regenera tables/truco-v1.bin (~28 s)
 ```
 
 Los tests de tablas son lentos en debug. **Siempre `--release`.**
+
+### Estado verificado
+
+Todo lo de arriba se ejecutó y pasó, no sedgún el reporte de la sesión anterior:
+
+| Chequeo | Resultado |
+|---|---|
+| `cargo test --release` | 188 / 188 verdes, 0 fallados, 62 s |
+| `cargo clippy --all-targets --release` | 0 warnings |
+| `node scripts/check-encoding.mjs` | 22 archivos, 7.130 líneas, limpio |
+| `cargo run --release -p gen-tables` | 7 / 7 invariantes ok |
+
+El generador es **determinista**: `tables/truco-v1.bin` se reproduce byte a byte
+(sha256 `8c0b0675e072f7402115b9c312f9e1ccc3d3d0169679520ac1372acb49080195`,
+1.924.152 bytes). Por eso `.gitignore` lo excluye sin riesgo: no hay información
+que se pierda, se reconstruye exactamente. Si el hash cambia después de tocar
+`cards.rs`, `profiles.rs` o `trickplay.rs`, el cambio **alteró una probabilidad**
+y hay que mirarlo.
 
 Herramientas de inspección:
 

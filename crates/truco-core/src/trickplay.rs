@@ -119,7 +119,9 @@ pub fn best_lead(
         for _ in 0..their_wins {
             results[0] = BazaResult::Loss;
         }
-        // El follower juega su mejor respuesta.
+        // El follower **elige qué carta sacrificar**, y esa elección decide la
+        // baza. Por eso se recorren todas sus respuestas y se toma la peor
+        // para nosotros: no juega su mejor carta, juega la que le convenga.
         let mut worst: Option<bool> = None;
         for follow_index in 0..theirs.len() {
             let child = {

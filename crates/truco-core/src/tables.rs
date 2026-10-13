@@ -383,7 +383,19 @@ pub fn build_endgame() -> Vec<u8> {
                         table[((i * n + j) * 2 + leader) * 4 + state] = 2; // inválido
                         continue;
                     }
-                    // `mano` es quien ganó la primera baza, o el guía si fue parda.
+                    // Esta tabla no tiene eje de "mano" (quien reparte): solo
+                    // guarda `guia`. El invariante es que `mano` solo importa
+                    // cuando las tres bazas terminan parda, y en ese caso vale
+                    // `guia`:
+                    //
+                    // - Si la primera baza se decidió, las tres no pueden dar
+                    //   parda, así que el valor de `mano` nunca se lee.
+                    // - Si la primera fue parda, el que guía la segunda es el
+                    //   mismo que guio la primera, y ese es el mano.
+                    //
+                    // Si alguna vez se quisiera generar una celda con
+                    // `guia != mano`, este valor sería incorrecto y habría que
+                    // agregar el eje al formato binario.
                     let mano = if my_wins + their_wins == 1 { usize::from(my_wins == 1) } else { leader };
                     let player_zero_wins = crate::trickplay::trick_endgame_value(
                         mine,

@@ -2,20 +2,30 @@
 //!
 //! # La regla de la parda
 //!
-//! Gana la mano **el ganador de la última baza no empatada**. Si las tres
-//! bazas son parda, gana el mano.
+//! En orden de prioridad (la implementación es [`resolve_hand`]):
 //!
-//! Esto cubre todos los casos, incluidos los que la gente mezcla:
+//! 1. Si alguien ganó **dos** bazas, ganó la mano.
+//! 2. Si la **tercera** no fue parda, la tercera decide.
+//! 3. Si la tercera fue parda, gana el ganador de la **primera** baza no parda.
+//! 4. Si las tres fueron parda, gana el mano.
 //!
-//! | b1   | b2   | b3    | gana  |
-//! |------|------|-------|-------|
-//! | A    | B    | parda | A     |
-//! | parda| A    | B     | B     |
-//! | A    | parda| B     | B     |
-//! | parda| parda| parda | mano  |
+//! Ninguna regla suelta cubre esto. "Gana el que ganó la primera" y "gana el
+//! que ganó la última no parda" son las dos generalizaciones que la gente
+//! mezcla, y **las dos están equivocadas**:
 //!
-//! La formulación "gana el que ganó la primera" NO es la regla: solo vale
-//! cuando la tercera fue parda.
+//! | b1    | b2    | b3    | gana  | por qué                      |
+//! |-------|-------|-------|-------|------------------------------|
+//! | A     | B     | parda | A     | empate 1-1, manda la primera |
+//! | A     | parda | B     | B     | la tercera decide            |
+//! | parda | A     | B     | B     | la tercera decide            |
+//! | A     | B     | A     | A     | juntó dos bazas              |
+//! | B     | A     | A     | A     | juntó dos bazas              |
+//! | parda | parda | parda | mano  | tres parda                   |
+//!
+//! La primera fila es la que separa las dos reglas: "última no parda" daría B,
+//! y está mal. Y las dos últimas filas son las que "ganó la primera" resuelve
+//! mal. Por eso la regla que se suele enunciar no alcanza: hay que contar
+//! primero cuántas bazas ganó cada uno.
 
 use crate::cards::Card;
 use crate::hand::Hand3;
@@ -246,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn parda_al_final_decide_la_ultima_no_empatada() {
+    fn parda_al_final_decide_la_primera_no_empatada() {
         // El caso que la gente resuelve mal: cada uno ganó una, la tercera fue parda.
         // Gana el que ganó la primera.
         assert_eq!(resolve_hand([Win, Loss, Parda], 1), 0);
