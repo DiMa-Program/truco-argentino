@@ -28,6 +28,8 @@ pub enum Phase {
     TrucoBet,
     /// Se están revelando los tantos del envido.
     EnvidoReveal,
+    /// Hay una flor cantada esperando "con flor quiero" o "flor me achico".
+    FlorBet,
     /// Se están jugando cartas.
     Playing,
     /// La mano terminó.
@@ -59,8 +61,30 @@ pub enum Action {
     SonBuenas,
     /// "El envido está primero": respondo al truco con envido.
     EnvidoFirst,
+    /// "¡Flor!": canto que tengo las tres cartas del mismo palo.
+    CallFlor,
+    /// "Con flor quiero": acepto el envite de flores.
+    FlorQuiero,
+    /// "Flor me achico": acepto como ganadora la flor del rival.
+    FlorMeAchico,
     /// Jugar una carta.
     PlayCard(Card),
+}
+
+/// Puntos que suma una flor cuando solo uno de los dos la tiene.
+pub const FLOR_POINTS_SOLO: u32 = 3;
+/// Puntos que suma un envite de flores aceptado ("con flor quiero").
+pub const FLOR_POINTS_ENVITE: u32 = 4;
+
+/// Una jugada de flor ya resuelta.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct FlorResolution {
+    /// Quién ganó los puntos de la flor.
+    pub winner: usize,
+    /// Puntos anotados.
+    pub points: u32,
+    /// `true` si hubo envite (los dos tenían flor) y se aceptó.
+    pub accepted: bool,
 }
 
 /// Una jugada completa del envido, ya resuelta.
@@ -104,6 +128,11 @@ pub struct HandState {
     /// `true` si la mano terminó porque alguien rechazó un canto.
     pub truck_declined: bool,
 
+    // Flor
+    /// Quién cante flor.
+    pub flor_caller: Option<usize>,
+    pub flor_result: Option<FlorResolution>,
+
     // Bazas
     pub bazas: [BazaResult; BAZAS_PER_HAND],
     pub bazas_played: usize,
@@ -115,6 +144,8 @@ pub struct HandState {
     // Resultado
     pub winner: Option<usize>,
     pub match_winner: Option<usize>,
+    /// Puntos anotados por la flor en esta mano.
+    pub flor_points: [u32; 2],
     /// Puntos anotados por el envido en esta mano.
     pub envido_points: [u32; 2],
     /// Puntos anotados por el truco en esta mano.
@@ -124,10 +155,21 @@ pub struct HandState {
 impl HandState {
     /// Crea una mano nueva con las dos cartas repartidas.
     pub fn new(hands: [Hand3; 2], mano: usize) -> Self {
+        // La flor es obligada: si alguien la tiene, hay que cantarla antes de
+        // que se apoye la primera carta. Si el mano no la tiene pero el rival
+        // sí, el turno de habla arranca en quien la tiene, porque si no el
+        // estado quedaría esperando una acción que solo el rival puede hacer.
+        let first = if hands[mano].has_flor() {
+            mano
+        } else if hands[1 - mano].has_flor() {
+            1 - mano
+        } else {
+            mano
+        };
         HandState {
             hands,
             mano,
-            current: mano,
+            current: first,
             phase: Phase::BeforeFirstCard,
             envido: EnvidoSeq::Empty,
             envido_caller: None,
@@ -143,12 +185,15 @@ impl HandState {
             truco_responder: None,
             truco_accepted: false,
             truck_declined: false,
+            flor_caller: None,
+            flor_result: None,
             bazas: [BazaResult::Parda; BAZAS_PER_HAND],
             bazas_played: 0,
             trick_leader: mano,
             trick: Vec::with_capacity(2),
             winner: None,
             match_winner: None,
+            flor_points: [0, 0],
             envido_points: [0, 0],
             truco_points: [0, 0],
         }
@@ -158,15 +203,32 @@ impl HandState {
     ///
     /// La ventana se cierra cuando cae la primera carta de la mano. Pero si se
     /// cantó truco **antes** de cualquier carta, el rival todavía puede
-    /// envidar (norma del "el envido está primero").
+    /// envidar (norma del "el envido está primero"). Y si alguien cante flor,
+    /// el envido queda anulado.
     pub fn envido_window_open(&self) -> bool {
-        self.phase == Phase::BeforeFirstCard
-            || (self.phase == Phase::TrucoBet && self.trick.is_empty() && self.bazas_played == 0)
+        self.flor_caller.is_none()
+            && (self.phase == Phase::BeforeFirstCard
+                || (self.phase == Phase::TrucoBet
+                    && self.trick.is_empty()
+                    && self.bazas_played == 0))
+    }
+
+    /// `true` si algún jugador tiene flor y todavía no se cantó.
+    ///
+    /// Mientras esto sea `true` la mano no puede arrancar: la flor es obligada.
+    /// Un jugador sin flor no tiene nada que hacer hasta que el rival la cante.
+    pub fn flor_pending(&self) -> bool {
+        self.flor_caller.is_none() && (self.hands[0].has_flor() || self.hands[1].has_flor())
+    }
+
+    /// `true` si a este jugador le toca cantar la flor obligatoriamente.
+    pub fn must_call_flor(&self, player: usize) -> bool {
+        self.flor_pending() && self.hands[player].has_flor()
     }
 
     /// `true` si se puede cantar truco ahora.
     pub fn truco_window_open(&self) -> bool {
-        !matches!(self.phase, Phase::Over | Phase::EnvidoReveal)
+        !matches!(self.phase, Phase::Over | Phase::EnvidoReveal | Phase::FlorBet)
             && self.phase != Phase::EnvidoBet
     }
 
@@ -184,7 +246,12 @@ impl HandState {
         if self.phase == Phase::Over {
             return false;
         }
+        // Mientras la flor esté pendiente de cantar es lo único legal, y solo para
+        // quien la tiene: es obligada, así que ni el envido ni la primera carta
+        // pueden adelantar la declaración.
         match action {
+            Action::CallFlor => self.flor_pending() && self.hands[player].has_flor(),
+            _ if self.flor_pending() => false,
             Action::CallEnvido(call) => {
                 player == self.current
                     && self.envido_window_open()
@@ -199,6 +266,9 @@ impl HandState {
             }
             Action::EnvidoFirst => {
                 player == self.current && self.phase == Phase::TrucoBet && self.trick.is_empty()
+            }
+            Action::FlorQuiero | Action::FlorMeAchico => {
+                player == self.current && self.phase == Phase::FlorBet
             }
             Action::AcceptEnvido | Action::DeclineEnvido => {
                 self.phase == Phase::EnvidoBet && player == self.envido_responder.unwrap_or(usize::MAX)
@@ -232,6 +302,9 @@ impl HandState {
             Action::DeclineTruco,
             Action::PassEnvido,
             Action::SonBuenas,
+            Action::CallFlor,
+            Action::FlorQuiero,
+            Action::FlorMeAchico,
         ];
         let mut actions: Vec<Action> =
             candidates.into_iter().filter(|a| self.is_legal(player, a)).collect();
@@ -277,6 +350,9 @@ impl HandState {
                 self.envido_responder = Some(player);
                 self.current = player;
             }
+            Action::CallFlor => self.call_flor(player),
+            Action::FlorQuiero => self.settle_flor(player, true),
+            Action::FlorMeAchico => self.settle_flor(player, false),
             Action::AcceptEnvido => {
                 self.envido_accepted = true;
                 self.phase = Phase::EnvidoReveal;
@@ -297,6 +373,50 @@ impl HandState {
             Action::PlayCard(card) => self.play_card(player, card),
         }
         Ok(())
+    }
+
+    /// Canta flor. La flor es obligada y anula el envido.
+    ///
+    /// Si el rival no tiene flor, la cosa se resuelve en el acto: 3 puntos para
+    /// quien la cantó y la mano sigue al truco. Si el rival también la tiene,
+    /// arranca el envite de flores y hay que esperar el "quiero" o el achique.
+    fn call_flor(&mut self, player: usize) {
+        self.flor_caller = Some(player);
+        let opponent = 1 - player;
+        if self.hands[opponent].has_flor() {
+            self.phase = Phase::FlorBet;
+            self.current = opponent;
+        } else {
+            self.flor_points[player] += FLOR_POINTS_SOLO;
+            self.flor_result =
+                Some(FlorResolution { winner: player, points: FLOR_POINTS_SOLO, accepted: false });
+            self.phase = Phase::Playing;
+            self.current = self.trick_leader;
+        }
+    }
+
+    /// Resuelve el envite de flores, que solo llega cuando los dos las tenían.
+    ///
+    /// Aceptado ("con flor quiero") son [`FLOR_POINTS_ENVITE`] para la flor más
+    /// alta. Rechazado ("flor me achico") son [`FLOR_POINTS_SOLO`] para quien
+    /// cantó flor, que es lo que dice el reglamento: el achique siempre se lo
+    /// lleva el que cantó, gane o pierda la comparación de valores.
+    fn settle_flor(&mut self, player: usize, accepted: bool) {
+        let caller = self.flor_caller.unwrap_or(self.mano);
+        let mine = self.hands[player].flor();
+        let theirs = self.hands[caller].flor();
+        // En empate de flor gana el mano.
+        let higher = if mine > theirs || (mine == theirs && player == self.mano) {
+            player
+        } else {
+            caller
+        };
+        let (scorer, points) =
+            if accepted { (higher, FLOR_POINTS_ENVITE) } else { (caller, FLOR_POINTS_SOLO) };
+        self.flor_points[scorer] += points;
+        self.flor_result = Some(FlorResolution { winner: scorer, points, accepted });
+        self.phase = Phase::Playing;
+        self.current = self.trick_leader;
     }
 
     fn declare(&mut self, player: usize, value: u8) -> Result<(), IllegalAction> {
@@ -434,15 +554,30 @@ impl HandState {
         self.phase = Phase::Over;
     }
 
-    /// Puntos totales por jugador en esta mano, envido primero.
+    /// Puntos totales por jugador en esta mano, flor y envido antes que el truco.
     pub fn points(&self) -> [u32; 2] {
-        [self.envido_points[0] + self.truco_points[0], self.envido_points[1] + self.truco_points[1]]
+        [
+            self.flor_points[0] + self.envido_points[0] + self.truco_points[0],
+            self.flor_points[1] + self.envido_points[1] + self.truco_points[1],
+        ]
     }
 
-    /// Aplica los puntos de la mano a un marcador, respetando que el envido va
-    /// primero y puede cerrar el partido antes que el truco.
+    /// Aplica los puntos de la mano a un marcador.
+    ///
+    /// El orden importa porque cada etapa puede cerrar el partido antes de que
+    /// juegue la siguiente: la flor se anota en el acto, después el envido y
+    /// después el truco.
     pub fn apply_to_score(&self, config: &MatchConfig, score: &mut Score) -> Option<usize> {
-        // 1. Envido
+        // 1. Flor. Se anota apenas se canta y anula el envido.
+        if let Some(result) = self.flor_result {
+            score_incr(score, result.winner, result.points);
+            if match_over(config, score) {
+                return Some(result.winner);
+            }
+        }
+
+        // 2. Envido. Si se cantó flor nunca llega acá: la obligatoriedad de la
+        // flor impide que exista un canto de envido en la misma mano.
         if self.envido_accepted && !self.envido.is_empty() {
             let winner = self.envido_result.map(|r| r.winner)?;
             if self.envido.is_falta() {
@@ -464,7 +599,7 @@ impl HandState {
             }
         }
 
-        // 2. Truco, solo si el envido no cerró el partido.
+        // 3. Truco, solo si el envido no cerró el partido.
         if let Some(winner) = self.winner {
             let points = self.truco_points[winner];
             score_incr(score, winner, points);
@@ -622,7 +757,7 @@ mod tests {
     #[test]
     fn tres_bazas_y_gana_el_dos_de_tres() {
         let mut state = HandState::new(
-            [hand(["1 de espada", "7 de espada", "3 de copa"]), hand(["4 de oros", "5 de oros", "6 de oros"])],
+            [hand(["1 de espada", "7 de espada", "3 de copa"]), hand(["4 de oros", "5 de espada", "6 de bastos"])],
             0,
         );
         let first = state.remaining(0)[0];
@@ -637,7 +772,7 @@ mod tests {
     #[test]
     fn la_parda_no_pasa_el_turno_al_que_no_corresponde() {
         let mut state = HandState::new(
-            [hand(["4 de oros", "3 de copa", "2 de bastos"]), hand(["4 de oros", "5 de oros", "6 de oros"])],
+            [hand(["4 de oros", "3 de copa", "2 de bastos"]), hand(["4 de oros", "5 de espada", "6 de bastos"])],
             0,
         );
         let card = parse("4 de oros");
@@ -705,5 +840,154 @@ mod tests {
 
     fn parse(s: &str) -> Card {
         crate::cards::parse_card(s).unwrap()
+    }
+
+    // ---- Flor ------------------------------------------------------------
+
+    /// Flor de 35: 3 + 5 + 7 + 20.
+    fn flor_baja() -> Hand3 {
+        hand(["3 de espada", "5 de espada", "7 de espada"])
+    }
+
+    /// Flor de 37: 4 + 6 + 7 + 20. Le gana a [`flor_baja`].
+    fn flor_alta() -> Hand3 {
+        hand(["4 de oros", "6 de oros", "7 de oros"])
+    }
+
+    /// Mano sin flor, con par de oros (envido 27).
+    fn sin_flor() -> Hand3 {
+        hand(["3 de copa", "4 de oros", "5 de bastos"])
+    }
+
+    #[test]
+    fn la_flor_es_obligada_y_bloquea_todo_lo_demas() {
+        let state = HandState::new([flor_baja(), sin_flor()], 0);
+        assert!(state.flor_pending());
+        assert!(state.must_call_flor(0));
+        assert_eq!(state.legal_actions(0), vec![Action::CallFlor], "solo cantar flor");
+        assert!(state.legal_actions(1).is_empty(), "el que no tiene flor espera");
+        assert!(!state.is_legal(0, &Action::CallEnvido(EnvidoCall::Envido)));
+        assert!(!state.is_legal(0, &Action::CallTruco));
+        assert!(!state.is_legal(0, &Action::PlayCard(state.hands[0].cards()[0])));
+    }
+
+    #[test]
+    fn el_turno_de_habla_arranca_en_quien_tiene_flor() {
+        // Si el mano no tiene flor pero el rival sí, hablar le toca al rival:
+        // si no, el estado quedaría esperando una acción que solo él puede hacer.
+        let state = HandState::new([sin_flor(), flor_baja()], 0);
+        assert_eq!(state.current, 1);
+        assert!(state.must_call_flor(1));
+        assert_eq!(state.legal_actions(0).len(), 0);
+    }
+
+    #[test]
+    fn flor_sola_gana_tres_puntos_y_sigue_la_mano() {
+        let mut state = HandState::new([flor_baja(), sin_flor()], 0);
+        state.apply(0, Action::CallFlor).unwrap();
+        assert_eq!(state.phase, Phase::Playing);
+        assert_eq!(state.flor_points, [FLOR_POINTS_SOLO, 0]);
+        assert_eq!(state.flor_result, Some(FlorResolution { winner: 0, points: FLOR_POINTS_SOLO, accepted: false }));
+        assert_eq!(state.points(), [FLOR_POINTS_SOLO, 0]);
+    }
+
+    #[test]
+    fn la_flor_anula_el_envido() {
+        let mut state = HandState::new([flor_baja(), sin_flor()], 0);
+        state.apply(0, Action::CallFlor).unwrap();
+        assert!(!state.envido_window_open(), "el envite queda anulado");
+        assert!(!state.is_legal(1, &Action::CallEnvido(EnvidoCall::Envido)));
+        assert!(!state.is_legal(1, &Action::CallFlor), "la flor ya se cantó");
+    }
+
+    #[test]
+    fn con_flor_en_los_dos_arranca_el_envite() {
+        let mut state = HandState::new([flor_baja(), flor_alta()], 0);
+        state.apply(0, Action::CallFlor).unwrap();
+        assert_eq!(state.phase, Phase::FlorBet);
+        assert_eq!(state.current, 1);
+        assert_eq!(state.flor_points, [0, 0], "nada se anota hasta que responde");
+        assert!(state.is_legal(1, &Action::FlorQuiero));
+        assert!(state.is_legal(1, &Action::FlorMeAchico));
+        assert!(!state.is_legal(1, &Action::CallTruco), "el truco espera al envite");
+    }
+
+    #[test]
+    fn con_flor_quiero_da_cuatro_a_la_flor_mayor() {
+        let mut state = HandState::new([flor_baja(), flor_alta()], 0);
+        state.apply(0, Action::CallFlor).unwrap();
+        state.apply(1, Action::FlorQuiero).unwrap();
+        // 37 le gana a 35.
+        assert_eq!(state.flor_points, [0, FLOR_POINTS_ENVITE]);
+        assert_eq!(state.phase, Phase::Playing);
+    }
+
+    #[test]
+    fn flor_me_achico_da_tres_al_que_canto() {
+        // "Flor me achico" se lo lleva siempre quien cantó flor, gane o pierda la
+        // comparación: por eso el 1, que tiene la flor menor, suma igual.
+        let mut state = HandState::new([flor_baja(), flor_alta()], 0);
+        state.apply(0, Action::CallFlor).unwrap();
+        state.apply(1, Action::FlorMeAchico).unwrap();
+        assert_eq!(state.flor_points, [FLOR_POINTS_SOLO, 0]);
+        assert!(!state.flor_result.unwrap().accepted, "el achico no es un envite aceptado");
+    }
+
+    #[test]
+    fn con_flor_quiero_al_menor_tambien_suma_cuatro() {
+        // Al revés: el que tiene la flor menor y acepta igual se lleva los 4.
+        let mut state = HandState::new([flor_alta(), flor_baja()], 0);
+        state.apply(0, Action::CallFlor).unwrap();
+        state.apply(1, Action::FlorQuiero).unwrap();
+        assert_eq!(state.flor_points, [FLOR_POINTS_ENVITE, 0]);
+    }
+
+    #[test]
+    fn el_empate_de_flor_lo_gana_el_mano() {
+        let mut state = HandState::new([flor_baja(), flor_baja()], 0);
+        state.apply(0, Action::CallFlor).unwrap();
+        state.apply(1, Action::FlorQuiero).unwrap();
+        assert_eq!(state.flor_points, [FLOR_POINTS_ENVITE, 0], "empate: gana el mano");
+    }
+
+    #[test]
+    fn la_flor_se_anota_antes_que_el_truco() {
+        let config = MatchConfig::to_30();
+        let mut score = Score { a: 24, b: 4 };
+        let mut state = HandState::new([flor_baja(), sin_flor()], 0);
+        state.apply(0, Action::CallFlor).unwrap();
+        // El rival no quiere el truco y la mano termina ahí.
+        state.apply(0, Action::CallTruco).unwrap();
+        state.apply(1, Action::DeclineTruco).unwrap();
+        assert_eq!(state.apply_to_score(&config, &mut score), None, "24 + 3 + 1 = 28, no cierra");
+        assert_eq!(score.a, 24 + FLOR_POINTS_SOLO + 1, "la flor y el truco se suman");
+        assert_eq!(score.b, 4);
+    }
+
+    #[test]
+    fn la_flor_puede_cerrar_el_partido_sola() {
+        let config = MatchConfig::to_30();
+        let mut score = Score { a: 28, b: 4 };
+        let mut state = HandState::new([flor_baja(), sin_flor()], 0);
+        state.apply(0, Action::CallFlor).unwrap();
+        assert_eq!(state.apply_to_score(&config, &mut score), Some(0), "28 + 3 = 31");
+        assert!(match_over(&config, &score));
+    }
+
+    #[test]
+    fn sin_flor_de_ninguno_no_cambia_nada() {
+        let state = partida();
+        assert!(!state.flor_pending());
+        assert!(!state.is_legal(0, &Action::CallFlor));
+        assert_eq!(state.current, 0, "arranca el mano");
+        assert!(state.is_legal(0, &Action::CallEnvido(EnvidoCall::Envido)));
+    }
+
+    #[test]
+    fn el_valor_de_la_flor_es_la_las_tres_cartas_mas_20() {
+        // 3 + 5 + 7 + 20 = 35, con figuras valuadas en cero.
+        assert_eq!(flor_baja().flor(), 35);
+        assert_eq!(flor_alta().flor(), 37);
+        assert_eq!(hand(["10 de espada", "11 de espada", "12 de espada"]).flor(), 20);
     }
 }

@@ -8,7 +8,7 @@ de policy del envido) y 4 (PWA advisor).
 ## Cómo trabajar acá
 
 ```bash
-cargo test --release                  # 188 tests, ~62 s
+cargo test --release                  # 201 tests, ~62 s
 cargo clippy --all-targets --release # tiene que salir limpio
 node scripts/check-encoding.mjs       # avisa si se cuelan caracteres raros
 cargo run --release -p gen-tables    # regenera tables/truco-v1.bin (~28 s)
@@ -22,7 +22,7 @@ Todo lo de arriba se ejecutó y pasó, no sedgún el reporte de la sesión anter
 
 | Chequeo | Resultado |
 |---|---|
-| `cargo test --release` | 188 / 188 verdes, 0 fallados, 62 s |
+| `cargo test --release` | 201 / 201 verdes, 0 fallados, 62 s |
 | `cargo clippy --all-targets --release` | 0 warnings |
 | `node scripts/check-encoding.mjs` | 22 archivos, 7.130 líneas, limpio |
 | `cargo run --release -p gen-tables` | 7 / 7 invariantes ok |
@@ -104,6 +104,16 @@ cargo run --release -p truco-core --example debug_endgame  # desglose de líneas
 - El rey le gana al 6, al 5 y al 4. "Número grande" no es "más fuerte".
 - **Valores de la escalera**: 21, 31, 42, 52, 74, y las que terminan en falta
   toman el valor de la falta. Verificados contra el reglamento.
+- **Flor: obligada y anula el envido.** Si alguien tiene las tres del mismo palo,
+  hay que cantarla antes de que se apoye cualquier carta: ni envido ni truco ni
+  primera carta pueden adelantarla. Si solo uno la tiene, se lleva 3 puntos al
+  acto. Si los dos la tienen hay envite de flores: "con flor quiero" da 4 puntos
+  a la flor mayor y "flor me achico" da 3 al que cantó flor, gane o pierda la
+  comparación. La flor vale 20 + las tres cartas, con las figuras en cero: rango
+  20..=38.
+- **El turno de habla puede arrancar en el rival.** Si el mano no tiene flor pero
+  el otro sí, `HandState::new` le da el turno a quien la tiene. Sin eso el estado
+  quedaría esperando una acción que solo ese jugador puede hacer.
 
 ### Motor
 
@@ -194,15 +204,14 @@ policy, solo los `Continue`.
 
 ## Decisiones pendientes
 
-- **Flor: el gap más grande que queda.** No es "casi siempre 2v2" ni
-  opcional: en 1v1 el reglamento dice que si uno tiene flor y el otro no, el
-  que la tiene **gana 3 puntos**, que **la flor es obligada cantarla**, y que
-  **el envite queda anulado**. Son 3 puntos que hoy el advisor ni menciona.
-  `hand.rs` ya tiene `has_flor()` / `flor()` y `belief.rs` ya tiene
-  `Observation::HasFlor` / `p_flor()`, pero `match_state.rs::Action` no tiene
-  ninguna acción de flor. Falta: acción de cantar flor, resolución de flor vs
-  sin flor, y la cascada de contraflor / con flor quiero / flor me achico /
-  contraflor al resto si se quiere cubrir el reglamento completo.
+- **Contraflor y contraflor al resto**: la flor base ya está en la máquina de
+  estados (obligatoria, 3 puntos si solo uno la tiene, envite de flores con
+  "con flor quiero" y "flor me achico"). Falta la capa de escaladas, que suma
+  cuatro acciones y cuatro reglas de puntos más. Se difiere a propósito: el
+  envite de flores exige que los dos tengan flor, y en 1v1 eso pasa en ~0,24 %
+  de las manos. Si se agrega, hay que respetar que contraflor aceptado son 6
+  puntos y rechazado son 4 para quien cantó, y que contraflor al resto aceptado
+  da al ganador lo que le falta al puntero y rechazado da 6.
 - **Tabla precomputada de policy del envido**: el solver existe pero falta
   serializar las 51 x 8 celdas para que el advisor no resuelva en el teléfono.
 - **Ajustar los pesos del modelo de rival** con partidas reales. Es la mayor
