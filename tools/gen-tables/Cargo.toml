@@ -1,0 +1,14 @@
+[package]
+name = "gen-tables"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Genera las tablas de probabilidad exactas del truco por enumeración completa"
+
+[[bin]]
+name = "gen-tables"
+path = "src/main.rs"
+
+[dependencies]
+truco-core = { path = "../../crates/truco-core" }

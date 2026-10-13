@@ -1,0 +1,12 @@
+[package]
+name = "truco-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Motor de reglas y capa de probabilidad del truco argentino (1v1)"
+
+[dependencies]
+
+[dev-dependencies]
+proptest = "1"

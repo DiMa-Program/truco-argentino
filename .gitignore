@@ -1,0 +1,21 @@
+# Compilación de Rust
+/target/
+**/*.rs.bk
+
+# Artefactos generados: se regeneran con `cargo run --release -p gen-tables`.
+# El binario de tablas son 1,8 MiB y se regenera en 19 segundos.
+/tables/*.bin
+
+# Node / PWA (Fase 3 en adelante)
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# Export PDF de STATE.md: el markdown es la fuente.
+STATE.pdf
+
+# Sistema
+.DS_Store
+Thumbs.db
+*.log
