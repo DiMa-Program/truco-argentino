@@ -82,10 +82,12 @@ impl Tables {
         self.envido_dist[index] as f64 / OPPONENT_HANDS as f64
     }
 
-    /// `P(el rival puede superar un tanto de `value` con lo declarado)`.
+    /// `P(EL RIVAL le gana a mi tanto de `value` con lo declarado)`.
     ///
-    /// Si soy mano, me alcanza con empatar (en el empate gana el mano), así que
-    /// cuento `v >= value`. Si no, necesito `v > value`.
+    /// En el empate gana el mano: si soy yo, me ganan solo cuando me superan
+    /// (`v > value`); si no soy yo, me ganan también cuando empatan
+    /// (`v >= value`). Tener las ramas al revés hace que el mano crea que
+    /// pierde contra lo que en realidad gana.
     ///
     /// Los índices 8..=19 son imposibles (con par el mínimo es 20) y siempre
     /// valen cero en la tabla, así que no hace falta filtrarlos.
@@ -93,7 +95,7 @@ impl Tables {
         let base = hand.hand_index() * ENVIDO_VALUES;
         let mut sum = 0u32;
         for v in 0..ENVIDO_VALUES as u8 {
-            let beats = if i_am_mano { v >= value } else { v > value };
+            let beats = if i_am_mano { v > value } else { v >= value };
             if beats {
                 sum += self.envido_dist[base + v as usize] as u32;
             }

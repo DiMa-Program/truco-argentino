@@ -243,8 +243,22 @@ impl OpponentModel {
     }
 
     /// Busca un arquetipo por nombre.
+    ///
+    /// Acepta el nombre visible (`promedio`, `novato`, `pasivo`, `agresivo`,
+    /// `tournament`) y también la clave de la función (`neutral`, `shark`).
+    ///
+    /// Sin los alias, `by_name("shark")` no encontraba nada y quien lo usara
+    /// sin fijarse en el `None` caía en silencio al modelo promedio: el
+    /// advisor parecía estar usando el perfil del tiburón y usaba el de todos.
     pub fn by_name(name: &str) -> Option<OpponentModel> {
-        OpponentModel::archetypes().into_iter().find(|m| m.name == name)
+        OpponentModel::archetypes()
+            .into_iter()
+            .find(|m| m.name == name)
+            .or_else(|| match name {
+                "neutral" | "promedio" => Some(OpponentModel::neutral()),
+                "shark" | "tiburon" => Some(OpponentModel::shark()),
+                _ => None,
+            })
     }
 }
 
@@ -618,5 +632,41 @@ mod tests {
         assert!((sigmoid(1000.0) - 1.0).abs() < 1e-12);
         assert!(sigmoid(-1000.0).abs() < 1e-12);
         assert!(sigmoid(-50.0) > 0.0, "no puede ser exactamente 0");
+    }
+
+    /// El nombre de la función y el nombre visible tienen que dar el MISMO
+    /// modelo. Sin esto, `by_name("shark")` caía en `None` y el advisor
+    /// terminaba usando el perfil promedio creyendo que usaba el del tiburón.
+    #[test]
+    fn los_alias_de_arquetipo_devuelven_el_modelo_correcto() {
+        for nombre in ["neutral", "promedio"] {
+            assert_eq!(
+                OpponentModel::by_name(nombre).map(|m| m.name),
+                Some("promedio"),
+                "el alias {nombre} tiene que dar el modelo promedio"
+            );
+        }
+        for nombre in ["shark", "tournament"] {
+            assert_eq!(
+                OpponentModel::by_name(nombre).map(|m| m.name),
+                Some("tournament"),
+                "el alias {nombre} tiene que dar el modelo del tiburón"
+            );
+        }
+        assert!(OpponentModel::by_name("no-existe").is_none());
+    }
+
+    /// Y no alcanza con que exista: el alias tiene que devolver un modelo
+    /// *distinto* del promedio, o el bug sigue ahí.
+    #[test]
+    fn el_alias_del_tiburon_no_es_el_promedio() {
+        let shark = OpponentModel::by_name("shark").expect("el alias tiene que existir");
+        let promedio = OpponentModel::neutral();
+        assert_ne!(
+            shark.betting.envido_accept_base,
+            promedio.betting.envido_accept_base,
+            "el tiburon tiene que ser más testarudo que el promedio"
+        );
+        assert!(shark.betting.envido_accept_base < promedio.betting.envido_accept_base);
     }
 }

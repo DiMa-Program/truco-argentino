@@ -157,12 +157,16 @@ fn valores_conocidos_del_envido() {
 }
 
 #[test]
-    fn la_probabilidad_de_que_me_superen_es_coherente() {
+fn la_probabilidad_de_que_me_superen_es_coherente() {
     let t = tables();
 
-    // Con 33 no existe nada por encima, así que:
-    //   · si soy mano, me alcanza con que el rival tenga 33 → P = 105/7770
-    //   · si soy pie, necesito que tenga más de 33 → P = 0
+    // Con 33 no existe nada por encima. El desempate es lo único que decide:
+    //   · si soy mano, gano el empate, así que me ganan solo con más de 33 → 0
+    //   · si soy pie, ellos ganan el empate, así que me gana quien tenga 33
+    //
+    // Ojo: este test antes afirmaba lo contrario y clavó el bug. El código y el
+    // test coincidían en estar mal, que es la forma más común de que un error
+    // sobreviva.
     let h = hand(["7 de espada", "6 de espada", "3 de copa"]);
     assert_eq!(h.envido(), 33);
 
@@ -170,11 +174,21 @@ fn valores_conocidos_del_envido() {
     // es imposible porque yo tengo el 7 y el 6.
     let as_mano = t.envido_beat_prob(&h, 33, true);
     let as_pie = t.envido_beat_prob(&h, 33, false);
+    assert_eq!(as_mano, 0.0, "siendo mano, con 33 nadie me puede superar ni empatarme");
     assert!(
-        (as_mano - 105.0 / OPPONENT_HANDS as f64).abs() < 1e-12,
-        "33 siendo mano: {as_mano}, se esperaba {:.6}", 105.0 / OPPONENT_HANDS as f64
+        (as_pie - 105.0 / OPPONENT_HANDS as f64).abs() < 1e-12,
+        "siendo pie, con 33 me gana quien tenga 33: {as_pie}, se esperaba {:.6}",
+        105.0 / OPPONENT_HANDS as f64
     );
-    assert_eq!(as_pie, 0.0, "siendo pie, con 33 nadie me puede superar");
+
+    // Y el mano tiene que estar mejor o igual que el pie, siempre.
+    let h = hand(["4 de oros", "3 de oros", "2 de bastos"]);
+    for value in 20..=33u8 {
+        assert!(
+            t.envido_beat_prob(&h, value, true) <= t.envido_beat_prob(&h, value, false) + 1e-12,
+            "con {value}, ser mano no puede empeorar el riesgo"
+        );
+    }
 
     // La curva de riesgo tiene que ser monótona decreciente en mi tanto: subir un
     // punto de tanto nunca me puede hacer peor.
@@ -205,24 +219,30 @@ fn valores_conocidos_del_envido() {
         .expect("algún tanto tiene que ser casi seguro");
     assert!(seguro >= 30, "con esta mano el corte seguro es {seguro}");
 
-    // Con un tanto bajo, la mayoría de las manos me supera.
+    // Con 27, el número depende de si gano o no el desempate: siendo mano me
+    // ganan solo los que me superan (16,86 %), y siendo pie también los que
+    // empatan (25,34 %). La diferencia es exactamente P(ellos tienen 27).
     let flojo = hand(["4 de oros", "3 de oros", "2 de bastos"]);
     assert_eq!(flojo.envido(), 27, "4 + 3 de oros");
-    let riesgo = t.envido_beat_prob(&flojo, 27, true);
+
+    let riesgo_pie = t.envido_beat_prob(&flojo, 27, true);
     assert!(
-        (riesgo - 0.2534).abs() < 0.0005,
-        "con 27 nos pasa el {:.2} %, se esperaba ~25,3 %",
-        riesgo * 100.0
+        (riesgo_pie - 0.1686).abs() < 0.0005,
+        "con 27 siendo mano me ganan el {:.2} %, se esperaba ~16,9 %",
+        riesgo_pie * 100.0
+    );
+    let riesgo_mano = t.envido_beat_prob(&flojo, 27, false);
+    assert!(
+        (riesgo_mano - 0.2534).abs() < 0.0005,
+        "con 27 siendo pie me ganan el {:.2} %, se esperaba ~25,3 %",
+        riesgo_mano * 100.0
     );
     // Y comparado con mi mejor tanto: muchísima diferencia.
     let mejor = hand(["7 de oros", "6 de oros", "3 de copa"]);
     assert_eq!(mejor.envido(), 33);
     let riesgo_33 = t.envido_beat_prob(&mejor, 33, true);
-    assert!(
-        riesgo_33 < riesgo / 10.0,
-        "27: {:.3} contra 33: {riesgo_33:.3}",
-        riesgo
-    );
+    assert_eq!(riesgo_33, 0.0, "con 33 siendo mano nadie me gana");
+    assert!(riesgo_33 < riesgo_pie / 10.0, "27: {riesgo_pie:.3} contra 33: {riesgo_33:.3}");
 }
 
 /// La remoción de cartas tiene que mover la aguja de forma medible.

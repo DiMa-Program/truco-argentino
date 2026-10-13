@@ -8,7 +8,7 @@ de policy del envido) y 4 (PWA advisor).
 ## Cómo trabajar acá
 
 ```bash
-cargo test --release                  # 210 tests, ~62 s
+cargo test --release                  # 225 tests, ~80 s
 cargo clippy --all-targets --release # tiene que salir limpio
 node scripts/check-encoding.mjs       # avisa si se cuelan caracteres raros
 cargo run --release -p gen-tables    # regenera los dos binarios (~40 s)
@@ -23,7 +23,7 @@ Todo lo de arriba se ejecutó y pasó, no según el reporte de la sesión anteri
 
 | Chequeo | Resultado |
 |---|---|
-| `cargo test --release` | 210 / 210 verdes, 0 fallados, 62 s |
+| `cargo test --release` | 225 / 225 verdes, 0 fallados, 80 s |
 | `cargo clippy --all-targets --release` | 0 warnings |
 | `node scripts/check-encoding.mjs` | 23 archivos, 7.892 líneas, limpio |
 | `cargo run --release -p gen-tables` | 8/8 invariantes de probabilidad + 6/6 de policy |
@@ -77,6 +77,7 @@ cargo run --release -p truco-core --example debug_endgame  # desglose de líneas
 | `belief.rs` | `P(mano rival \| observaciones)` |
 | `envido_solver.rs` | Equilibrio del envido por CFR+, exacto (brecha de Nash = 0) |
 | `envido_policy.rs` | La policy del envido precomputada y serializada, para no resolver en el teléfono |
+| `advisor.rs` | Une belief + policy + modelo de rival + marcador en una recomendación con EV |
 
 ## Decisiones que no son obvias
 
@@ -167,8 +168,45 @@ cargo run --release -p truco-core --example debug_endgame  # desglose de líneas
 | 0 · Motor de reglas | ✅ | — |
 | 1 · Tablas exactas | ✅ | — |
 | 2 · Belief + modelo de rival | ✅ | Falta **ajustar** los pesos del modelo a datos reales |
-| 3 · CFR del envido | ✅ | Falta la **tabla precomputada** de policy (indexada por p_win x falta) |
-| 4 · PWA advisor | ❌ | Sin empezar |
+| 3 · CFR del envido | ✅ | — |
+| 3b · Tabla de policy | ✅ | — |
+| 4a · Advisor (decisión de envido) | ✅ | Falta el consejo de bazas |
+| 4b · PWA | ❌ | Sin empezar |
+
+## Fase 4a · el advisor
+
+Es lo que une las piezas. Sin él, tablas, belief y policy eran tres
+computaciones que nadie cruzaba, y una PWA sería interfaz sobre una API
+inexistente.
+
+**Cómo se calcula el valor de cantar.** Promedio bayesiano sobre las manos
+candidatas del rival:
+
+```text
+EV(cantar V) = P(acepta) · P(gano | aceptan) · puntos_aceptados
+             + P(no acepta) · puntos_por_no_querer
+```
+
+`P(acepta)` se integra sobre las 7.770 manos con el modelo de conducta del
+rival; `P(gano)` sale de la belief condicionada a mi mano. No hay heurística.
+
+**Callarse vale 0 en el nodo de apertura**, y no por aproximación: si nadie
+canta, la ventana se cierra al apoyarse la primera carta. Lo que el callarse
+compra es poder *responder* si el rival canta, y ese valor vive en otro nodo.
+
+**El bluff barre el rango declarable.** No calcula el bluff con un valor fijo:
+prueba 20..=33 y se queda con el que más EV da. Acá está la respuesta operativa
+a *"cuándo mentir"* y, sobre todo, *con qué tanto*.
+
+Para verlo:
+
+```bash
+cargo run --release -p truco-core --example advisor
+cargo run --release -p truco-core --example advisor -- "4 de oros,3 de oros,2 de bastos" 10 20 shark
+```
+
+Todavía no cubre el consejo de bazas, que necesita las tablas de probabilidad
+y promediar el minimax sobre la belief en vez de usar una mano rival fija.
 
 ## Fase 3 · lo que dice el equilibrio del envido
 
@@ -240,7 +278,23 @@ exactamente la resolución de la cuantización a `u16`.
 8. **`best_response_value` mal planteada**: tomaba `min` en los nodos del
    rival (debe ser desde su perspectiva) y `min` en vez de suma ponderada en
    los nodos ajenos. Además los valores terminales no se ponderaban por la
-policy, solo los `Continue`.
+   policy, solo los `Continue`.
+9. **El desempate del envido al revés, en dos lugares a la vez.** Tanto
+   `belief::p_envido_beat` como `tables::envido_beat_prob` tenían las ramas de
+   mano y pie **intercambiadas**: Contaban `v >= value` siendo mano y `v > value`
+   siendo pie. Es exactamente al revés, porque en el empate gana el mano, así que
+   **siendo mano me ganan solo si me superan**. Con 27 de envido el motor decía
+   que ganabas el 74,66 % siendo mano; la realidad es 83,14 %. La diferencia es
+   justo la probabilidad de que ellos tengan 27 (8,48 %).
+
+   Lo意义上的: **el test existente afirmaba el comportamiento equivocado**, así
+   que el código y el test coincidían en estar mal. Ese es el modo de falla más
+   común de un error: no es que falte un test, es que el test lo consagra.
+10. **`by_name("shark")` devolvía `None`.** El arquetipo se llama `shark()` pero
+    su `name` es `"tournament"`, así que buscarlo por el nombre de la función no
+   lo encontraba. Quien lo usara sin fijarse en el `None` caía en silencio al
+    modelo promedio: el advisor parecía estar usando el perfil del tiburón y
+   usaba el de todos. Ahora hay alias.
 
 ## Decisiones pendientes
 

@@ -25,6 +25,7 @@
 //! Manos posibles: C(40,3) = 9.880. Manos del rival: C(37,3) = 7.770. Pares
 //! enumerables: 76.767.600.
 
+pub mod advisor;
 pub mod belief;
 pub mod bets;
 pub mod cards;

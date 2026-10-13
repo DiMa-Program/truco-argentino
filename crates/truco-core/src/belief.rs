@@ -293,6 +293,15 @@ impl Belief {
         self.candidates.len()
     }
 
+    /// Los candidatos con su probabilidad, para integrar sobre la belief.
+    ///
+    /// El índice es la posición dentro del catálogo de 9.880 manos. Es lo que
+    /// necesita el advisor para promediar cualquier cantidad sobre la
+    /// distribución en vez de aproximarla por la moda.
+    pub fn iter_candidates(&self) -> impl Iterator<Item = (usize, f64)> + '_ {
+        self.candidates.iter().copied().zip(self.probabilities.iter().copied())
+    }
+
     /// `false` si no quedó ninguna mano posible.
     pub fn is_contradictory(&self) -> bool {
         !self.effective
@@ -341,9 +350,14 @@ impl Belief {
             .sum()
     }
 
-    /// `P(gano el envido si declaro `value`)`.
+    /// `P(EL RIVAL le gana a mi tanto de `value`)`.
     ///
-    /// En empate gana el mano, así que el umbral depende de si soy yo.
+    /// Ojo con el nombre: devuelve cuántos me ganan, **no** cuántos gano. Para
+    /// lo propio hay que complementarlo.
+    ///
+    /// En el empate gana el mano, así que el umbral depende de si soy yo:
+    /// siendo mano me ganan solo si me **superan**; si no, me ganan
+    /// **también** cuando empatan.
     pub fn p_envido_beat(&self, value: u8) -> f64 {
         let catalog = catalog_ref();
         self.candidates
@@ -352,9 +366,9 @@ impl Belief {
             .filter(|(index, _)| {
                 let their = catalog[**index].envido();
                 if self.state.i_am_mano {
-                    their >= value
-                } else {
                     their > value
+                } else {
+                    their >= value
                 }
             })
             .map(|(_, p)| *p)
