@@ -28,6 +28,7 @@
 pub mod belief;
 pub mod bets;
 pub mod cards;
+pub mod envido_policy;
 pub mod envido_solver;
 pub mod hand;
 pub mod indexing;

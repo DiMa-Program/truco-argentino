@@ -3,7 +3,9 @@
 **/*.rs.bk
 
 # Artefactos generados: se regeneran con `cargo run --release -p gen-tables`.
-# El binario de tablas son 1,8 MiB y se regenera en 19 segundos.
+# Los dos son deterministas byte a byte, asi que no hay nada que versionar:
+#   truco-v1.bin         1,8 MiB  (~28 s)
+#   envido-policy-v1.bin 191 KiB  (~12 s, 816 juegos de CFR+)
 /tables/*.bin
 
 # Node / PWA (Fase 3 en adelante)

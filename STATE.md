@@ -8,31 +8,37 @@ de policy del envido) y 4 (PWA advisor).
 ## Cómo trabajar acá
 
 ```bash
-cargo test --release                  # 201 tests, ~62 s
+cargo test --release                  # 210 tests, ~62 s
 cargo clippy --all-targets --release # tiene que salir limpio
 node scripts/check-encoding.mjs       # avisa si se cuelan caracteres raros
-cargo run --release -p gen-tables    # regenera tables/truco-v1.bin (~28 s)
+cargo run --release -p gen-tables    # regenera los dos binarios (~40 s)
+cargo run --release -p gen-tables -- --skip-policy   # solo las tablas de probabilidad
 ```
 
 Los tests de tablas son lentos en debug. **Siempre `--release`.**
 
 ### Estado verificado
 
-Todo lo de arriba se ejecutó y pasó, no sedgún el reporte de la sesión anterior:
+Todo lo de arriba se ejecutó y pasó, no según el reporte de la sesión anterior:
 
 | Chequeo | Resultado |
 |---|---|
-| `cargo test --release` | 201 / 201 verdes, 0 fallados, 62 s |
+| `cargo test --release` | 210 / 210 verdes, 0 fallados, 62 s |
 | `cargo clippy --all-targets --release` | 0 warnings |
-| `node scripts/check-encoding.mjs` | 22 archivos, 7.130 líneas, limpio |
-| `cargo run --release -p gen-tables` | 7 / 7 invariantes ok |
+| `node scripts/check-encoding.mjs` | 23 archivos, 7.892 líneas, limpio |
+| `cargo run --release -p gen-tables` | 8/8 invariantes de probabilidad + 6/6 de policy |
 
-El generador es **determinista**: `tables/truco-v1.bin` se reproduce byte a byte
-(sha256 `8c0b0675e072f7402115b9c312f9e1ccc3d3d0169679520ac1372acb49080195`,
-1.924.152 bytes). Por eso `.gitignore` lo excluye sin riesgo: no hay información
-que se pierda, se reconstruye exactamente. Si el hash cambia después de tocar
-`cards.rs`, `profiles.rs` o `trickplay.rs`, el cambio **alteró una probabilidad**
-y hay que mirarlo.
+Los dos generadores son **deterministas**, así que `.gitignore` los excluye sin
+riesgo: no hay información que se pierda, se reconstruye exacta.
+
+| Artefacto | Bytes | sha256 | Tiempo |
+|---|---|---|---|
+| `tables/truco-v1.bin` | 1.924.152 | `8c0b0675…80195` | ~28 s |
+| `tables/envido-policy-v1.bin` | 195.862 | `904ffe9a…f7c56a` | ~12 s |
+
+Si el primero cambia después de tocar `cards.rs`, `profiles.rs` o `trickplay.rs`,
+el cambio **alteró una probabilidad**. Si el segundo cambia después de tocar
+`envido_solver.rs`, el cambio **alteró el equilibrio del envido**.
 
 Herramientas de inspección:
 
@@ -70,6 +76,7 @@ cargo run --release -p truco-core --example debug_endgame  # desglose de líneas
 | `opponent.rs` | Modelo del rival: 5 arquetipos + likelihood de canto y de cartas |
 | `belief.rs` | `P(mano rival \| observaciones)` |
 | `envido_solver.rs` | Equilibrio del envido por CFR+, exacto (brecha de Nash = 0) |
+| `envido_policy.rs` | La policy del envido precomputada y serializada, para no resolver en el teléfono |
 
 ## Decisiones que no son obvias
 
@@ -170,13 +177,46 @@ El solver es **exacto**: la brecha de Nash da 0 en toda la grilla de
 
 Hallazgo estructural que conviene tener presente: **rechazar cualquier canto
 inicial cuesta siempre 1 punto**, sin importar cuánto se esté gepuesto. Eso
-vuelve la apertura **abrupta**: hay un `p_win` de corte (≈ 0.40 con falta de 5)
-y antes se calla siempre, después canta siempre. No hay zona gradual.
+vuelve la apertura **abrupta**: hay un `p_win` de corte y antes se calla
+siempre, después canta siempre. No hay zona gradual.
+
+El corte **depende del valor de la falta, y para arriba**:
+
+| falta | corte de apertura |
+|---|---|
+| 5 puntos | `p_win` ≈ 0,40 |
+| 30 puntos (el partido entero, los dos en malas) | `p_win` ≈ 0,50 |
+
+La dirección es contraintuitiva y vale la pena entenderla: con la falta grande
+hace falta **más** ventaja para abrir, no menos. Si te quieren, perdes
+`falta x (1 - 2 x p_win)`, así que con 30 puntos a `p_win` 0,45 la apertura
+necesita que el rival renuncie el 75 % de las veces, contra el 33 % que necesita
+a 5 puntos. Y el rival renuncia menos cuando hay más en juego. Traducción a la
+mesa: **tirar falta envido abajo porque "total va a ser mucho" es exactamente el
+error**, y el motor lo confirma con números.
 
 El solver asume que **los dos conocen `p_win`**. En una partida real cada uno
 tiene su propia belief y las dos no coinciden, así que la tabla no se puede
 seguir a ciegas: hay que cruzarla con el modelo de rival. La tabla es la mejor
 respuesta contra alguien que también juegue el equilibrio.
+
+### Fase 3b · la tabla precomputada
+
+`envido_policy.rs` guarda el resultado de resolver los **816 juegos** de la
+grilla (51 valores de `p_win` x 16 valores de falta) en 195.862 bytes. El
+teléfono carga el archivo y consulta en microsegundos en vez de correr CFR+.
+
+Los 16 valores de falta no son arbitrarios: el rango real de una partida a 30 es
+`1..=15` cuando alguno está en buenas, y **30** cuando los dos están en las
+malas. El caso de las malas va en cubo propio porque no es "mucha falta", es otro
+juego. Una falta de 16 a 29 se guarda en el cubo de 30: es la única
+aproximación, y en esa zona aceptar domina siempre.
+
+La verificación cara (comparar la tabla contra el solver en vivo, nodo por nodo)
+**no es un test**: resolver la grilla tarda 12 s. Vive en `gen-tables`, que corre
+una vez offline. Los tests cubren el formato y las invariantes baratas. La
+diferencia máxima observada entre tabla y solver es **0,00006**, que es
+exactamente la resolución de la cuantización a `u16`.
 
 ## Bugs que encontraron los tests (no la intuición)
 
@@ -212,8 +252,6 @@ policy, solo los `Continue`.
   de las manos. Si se agrega, hay que respetar que contraflor aceptado son 6
   puntos y rechazado son 4 para quien cantó, y que contraflor al resto aceptado
   da al ganador lo que le falta al puntero y rechazado da 6.
-- **Tabla precomputada de policy del envido**: el solver existe pero falta
-  serializar las 51 x 8 celdas para que el advisor no resuelva en el teléfono.
 - **Ajustar los pesos del modelo de rival** con partidas reales. Es la mayor
   ganancia pendiente.
 - Fuera de alcance: 2v2 con señas, 3v3 pica pica, OCR de pantalla, modo mazo
