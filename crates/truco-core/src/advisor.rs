@@ -40,10 +40,19 @@ use crate::cards::Card;
 use crate::envido_policy::EnvidoPolicy;
 use crate::hand::Hand3;
 use crate::opponent::{envido_accept_likelihood, OpponentModel};
-use crate::profiles::{profile3_index, profile3_of, Profile3};
+use crate::profiles::{profile3_index, profile3_of};
 use crate::scoring::{falta_terms, MatchConfig, Score};
 use crate::testutil::catalog_ref;
 use crate::trickplay;
+
+/// Un `PlayAdvice` honesto: no hay nada que recomendar, y por qué.
+///
+/// Sin esto devolvemos el argmax de una lista de ceros, que la UI presenta
+/// igual como recomendación y con la explicación de siempre. Mejor un "no
+/// hay" con el motivo.
+fn sin_jugada(reasons: Vec<String>) -> PlayAdvice {
+    PlayAdvice { card: None, win_prob: 0.0, alternatives: Vec::new(), reasons }
+}
 
 /// Qué se puede hacer en el nodo de apertura del envido.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -429,6 +438,30 @@ pub fn p_win_declared(&self, my_hand: Hand3, belief: &Belief) -> f64 {
         let mano = usize::from(self.i_am_mano);
         let mine = my_hand.cards();
 
+        // Una mano se cierra en la segunda baza. Si alguien ya tiene dos, no
+        // queda nada que jugar: devolver una carta acá hacía que la app
+        // recomendara la de mayor índice con 0 % de chances, que es ruido, no
+        // consejo.
+        if my_wins >= 2 || their_wins >= 2 {
+            return sin_jugada(vec![format!(
+                "la mano ya está: {} a {}",
+                if my_wins >= 2 { "ganaste" } else { "perdiste" },
+                2
+            )]);
+        }
+
+        // La salida del rival no puede ser una carta mía. Antes esto no se
+        // chequeaba y el resultado era silenciosamente inútil: todas las manos
+        // candidatas se descartaban, todas las probabilidades quedaban en 0 y
+        // la app igualaba recomendar una. Ahora avisa.
+        if let Some(lead) = lead_card {
+            if mine.contains(&lead) {
+                return sin_jugada(vec![format!(
+                    "{lead} está en tu mano, así que no puede ser la salida del rival"
+                )]);
+            }
+        }
+
         // Las manos del rival colapsan por perfil de fuerza: el resultado de
         // una baza depende solo de las clases, no de qué carta concreta es.
         // 7.770 candidatos se vuelven como mucho 589 evaluaciones del solver.
@@ -439,32 +472,81 @@ pub fn p_win_declared(&self, my_hand: Hand3, belief: &Belief) -> f64 {
                 peso_por_perfil[p] += peso;
             }
         }
-        let perfiles: Vec<(Profile3, f64)> = crate::profiles::all_profiles3()
-            .iter()
-            .zip(peso_por_perfil.iter())
-            .filter(|(_, peso)| **peso > 1e-12)
-            .map(|(p, peso)| (*p, *peso))
-            .collect();
 
         let mut sumas = vec![0.0f64; mine.len()];
 
-        for (perfil, peso) in &perfiles {
-            let theirs = perfil.iter().map(|c| trickplay::representative(*c)).collect::<Vec<_>>();
-            let valores = match lead_card {
-                None => trickplay::lead_values(mine, &theirs, my_wins, their_wins, mano),
-                Some(lead) => {
-                    // Para el solver solo quedan las cartas que el rival todavía
-                    // no jugó.
-                    let restantes: Vec<Card> = theirs.iter().copied().filter(|c| *c != lead).collect();
-                    if restantes.len() + 1 != theirs.len() {
-                        continue; // la salida no era de esta mano candidata
+        // Hay dos formas de agrupar, y la elección importa.
+        //
+        // Si ME TOCA GUIAR, el resultado de la baza depende solo de las clases
+        // de las tres cartas del rival, así que agrupo por `Profile3`: 7.770
+        // candidatos se vuelven como mucho 589 evaluaciones del solver.
+        //
+        // Si RESPONDO, la carta que salió es una carta concreta y hay que
+        // sacarla de la mano del rival antes de agrupar. Si se agrupara por
+        // `Profile3` y después se filtrara por carta, el filtro solo acertaría
+        // cuando la salida es justo la carta representativa de su clase: con
+        // cualquier otra carta se descartaban los 589 perfiles y el resultado
+        // era una lista de ceros. Por eso acá se agrupa por el perfil de las
+        // DOS cartas que quedan, que sí es un `Profile2` y hay pocos.
+        let evaluados: Vec<(Vec<Card>, f64)> = match lead_card {
+            None => {
+                let mut peso_por_perfil = vec![0.0f64; crate::profiles::all_profiles3().len()];
+                for (index, peso) in belief.iter_candidates() {
+                    let perfil = profile3_of(*catalog_ref()[index].cards());
+                    if let Some(p) = profile3_index(&perfil) {
+                        peso_por_perfil[p] += peso;
                     }
-                    trickplay::follow_values(mine, &restantes, lead, my_wins, their_wins, mano)
                 }
+                crate::profiles::all_profiles3()
+                    .iter()
+                    .zip(peso_por_perfil.iter())
+                    .filter(|(_, peso)| **peso > 1e-12)
+                    .map(|(p, peso)| (p.iter().map(|c| trickplay::representative(*c)).collect(), *peso))
+                    .collect()
+            }
+            Some(lead) => {
+                let mut peso_por_perfil = vec![0.0f64; crate::profiles::all_profiles2().len()];
+                for (index, peso) in belief.iter_candidates() {
+                    let cartas = catalog_ref()[index].cards();
+                    // Las manos que no tienen la carta que salieron son
+                    // imposibles a la vista de la belief.
+                    let Some(pos) = cartas.iter().position(|c| *c == lead) else {
+                        continue;
+                    };
+                    let resto = [cartas[(pos + 1) % 3], cartas[(pos + 2) % 3]];
+                    let perfil = crate::profiles::profile2_of(resto);
+                    if let Some(p) = crate::profiles::profile2_index(&perfil) {
+                        peso_por_perfil[p] += peso;
+                    }
+                }
+                crate::profiles::all_profiles2()
+                    .iter()
+                    .zip(peso_por_perfil.iter())
+                    .filter(|(_, peso)| **peso > 1e-12)
+                    .map(|(p, peso)| (p.iter().map(|c| trickplay::representative(*c)).collect(), *peso))
+                    .collect()
+            }
+        };
+
+        for (theirs, peso) in &evaluados {
+            let valores = match lead_card {
+                None => trickplay::lead_values(mine, theirs, my_wins, their_wins, mano),
+                Some(lead) => trickplay::follow_values(mine, theirs, lead, my_wins, their_wins, mano),
             };
             for (i, gana) in valores.iter().enumerate() {
                 sumas[i] += peso * (*gana as u8 as f64);
             }
+        }
+
+        // Una salida que no está en ninguna mano candidata deja la belief sin
+        // nada que promediar. Antes salía una recomendación con 0 % y una
+        // explicación que mencionaba manos que nunca se usaron.
+        if evaluados.is_empty() {
+            let detalle = match lead_card {
+                Some(c) => format!("ninguna mano posible del rival tiene {c}"),
+                None => "no quedó ninguna mano posible del rival".to_string(),
+            };
+            return sin_jugada(vec![format!("no hay nada que recomendar: {detalle}")]);
         }
 
         let mut alternativas: Vec<(Card, f64)> =
@@ -474,7 +556,7 @@ pub fn p_win_declared(&self, my_hand: Hand3, belief: &Belief) -> f64 {
         let card = alternativas.first().map(|(c, _)| *c);
         let win_prob = alternativas.first().map(|(_, p)| *p).unwrap_or(0.0);
 
-        let reasons = self.play_reasons(&alternativas, lead_card, my_wins, their_wins, &perfiles);
+        let reasons = self.play_reasons(&alternativas, lead_card, my_wins, their_wins, evaluados.len());
 
         PlayAdvice { card, win_prob, alternatives: alternativas, reasons }
     }
@@ -485,14 +567,11 @@ pub fn p_win_declared(&self, my_hand: Hand3, belief: &Belief) -> f64 {
         lead_card: Option<Card>,
         my_wins: usize,
         their_wins: usize,
-        perfiles: &[(Profile3, f64)],
+        perfiles: usize,
     ) -> Vec<String> {
         let mut out = Vec::new();
         let quien = if lead_card.is_none() { "guiás" } else { "respondés" };
-        out.push(format!(
-            "{quien} con {} manos distintas del rival todavía posibles",
-            perfiles.len()
-        ));
+        out.push(format!("{quien} con {perfiles} manos distintas del rival todavía posibles"));
         if let Some((card, p)) = alternativas.first() {
             out.push(format!(
                 "la mejor es {card}: ganás la mano el {:.0} % de las veces",

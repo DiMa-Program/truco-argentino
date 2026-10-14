@@ -106,6 +106,53 @@ struct ResponseOptionJson {
     equilibrium_mass: f64,
 }
 
+/// Convierte un índice de la UI en una carta, **validando el rango**.
+///
+/// `Card::from_index` valida con `assert!`, que en release no devuelve un
+/// error sino que rompe el módulo entero. Eso dejaba tres rutas de panic
+/// (observar una carta jugada, la salida de una baza y la mano) que además
+/// envenenaban a `free()`. Acá el error es un mensaje limpio.
+fn carta(index: u8) -> Result<Card, JsError> {
+    if (index as usize) >= crate::cards::DECK_SIZE {
+        return Err(JsError::new(&format!(
+            "carta {index} fuera de rango: tiene que estar entre 0 y {}",
+            crate::cards::DECK_SIZE - 1
+        )));
+    }
+    Ok(Card::from_index(index))
+}
+
+/// Valida un tanto declarado: entre 20 y 33, como en el reglamento.
+///
+/// Aceptar un 0 o un 255 no es "ser tolerante": es dejar que un error de la
+/// UI se convierta en una belief condicionada sobre un tanto imposible.
+fn tanto_declarado(valor: u8) -> Result<u8, JsError> {
+    if !(20..=33).contains(&valor) {
+        return Err(JsError::new(&format!(
+            "un tanto declarado va de 20 a 33, no {valor}"
+        )));
+    }
+    Ok(valor)
+}
+
+/// Valida el avance de las bazas.
+///
+/// Hay tres bazas por mano y la mano se cierra en la segunda, así que la
+/// suma nunca puede pasar de 2. `trickplay` indexa con la suma y antes se
+/// colgaba con 1-2, 2-1 y 2-2: tres formas de romper la app con dos toques.
+fn avance(mias: u8, suyas: u8) -> Result<(usize, usize), JsError> {
+    let (m, s) = (mias as usize, suyas as usize);
+    if m > 2 || s > 2 {
+        return Err(JsError::new("cada uno puede tener 0, 1 o 2 bazas ganadas"));
+    }
+    if m + s > 2 {
+        return Err(JsError::new(&format!(
+            "imposible: {m}+{s} bazas. Solo hay tres bazas por mano y termina en la segunda"
+        )));
+    }
+    Ok((m, s))
+}
+
 /// El motor que corre dentro del navegador.
 #[wasm_bindgen]
 pub struct Truco {
@@ -161,7 +208,7 @@ impl Truco {
         }
         let mut parsed = [Card::from_index(0); 3];
         for (slot, index) in parsed.iter_mut().zip(cards) {
-            *slot = Card::from_index(*index);
+            *slot = carta(*index)?;
         }
         let hand = Hand3::from_slice(&parsed).ok_or_else(|| {
             JsError::new("mano inválida: no puede tener la misma carta dos veces")
@@ -194,14 +241,16 @@ impl Truco {
         }
     }
 
-    /// Registra que el rival cantó envido y declaró `value`.
+    /// Registra que el rival cantó envido y declaró `value`, que va de 20 a 33.
     #[wasm_bindgen(js_name = observeDeclared)]
-    pub fn observe_declared(&mut self, value: u8) {
+    pub fn observe_declared(&mut self, value: u8) -> Result<(), JsError> {
+        let value = tanto_declarado(value)?;
         self.declared = Some(value);
         if let Some(state) = self.state.as_mut() {
             state.observe(Observation::CalledEnvido(true));
             state.observe(Observation::DeclaredEnvido(value));
         }
+        Ok(())
     }
 
     /// Registra que el rival jugó una carta en la baza `trick`.
@@ -219,13 +268,20 @@ impl Truco {
         bazas_suyas: u8,
     ) -> Result<(), JsError> {
         let state = self.state.as_mut().ok_or_else(|| JsError::new("primero hay que setHand"))?;
+        let card = carta(card)?;
+        let (mias, suyas) = avance(bazas_mias, bazas_suyas)?;
+        if (trick as usize) > mias + suyas {
+            return Err(JsError::new(&format!(
+                "la baza {trick} todavía no se jugó: van {mias}+{suyas}"
+            )));
+        }
         state.observe(Observation::PlayedCard {
-            card: Card::from_index(card),
+            card,
             ctx: PlayContext {
                 table: [None, None],
                 he_leads,
                 trick: trick as usize,
-                bazas: [bazas_mias as usize, bazas_suyas as usize],
+                bazas: [mias, suyas],
             },
         });
         Ok(())
@@ -288,11 +344,13 @@ impl Truco {
         their_wins: u8,
     ) -> Result<String, JsError> {
         let (hand, state) = self.hand_and_state()?;
+        let (my_wins, their_wins) = avance(my_wins, their_wins)?;
+        let lead_card = lead_card.map(carta).transpose()?;
         let policy = self.policy.as_ref().ok_or_else(|| JsError::new("falta la policy"))?;
         let belief = state.compute(&self.model);
         let advisor = Advisor { policy, model: self.model, config: self.config, score: self.score, i_am_mano: self.i_am_mano };
         let advice =
-            advisor.best_play(hand, lead_card.map(Card::from_index), my_wins as usize, their_wins as usize, &belief);
+            advisor.best_play(hand, lead_card, my_wins, their_wins, &belief);
 
         let json = PlayJson {
             card: advice.card.map(|c| c.to_string()),
@@ -326,6 +384,7 @@ impl Truco {
     #[wasm_bindgen(js_name = responseAdvice)]
     pub fn response_advice(&self, seq: &str, declared: u8) -> Result<String, JsError> {
         let (hand, state) = self.hand_and_state()?;
+        let declared = tanto_declarado(declared)?;
         let policy = self.policy.as_ref().ok_or_else(|| JsError::new("falta la policy"))?;
         let seq = parse_envido_seq(seq)?;
         if seq.is_empty() {

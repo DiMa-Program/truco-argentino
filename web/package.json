@@ -9,10 +9,12 @@
     "prepare:tables": "node scripts/copy-tables.mjs",
     "prepare:assets": "npm run prepare:wasm && npm run prepare:tables",
     "dev": "npm run prepare:assets && vite",
-    "build": "npm run prepare:assets && tsc --noEmit && vite build",
+    "build": "npm run prepare:assets && tsc --noEmit && vite build && npm run stamp:sw",
+    "stamp:sw": "node scripts/stamp-sw.mjs",
     "preview": "vite preview --port 4173",
     "smoke": "node scripts/smoke.mjs",
-    "verify": "npm run build && npm run smoke",
+    "scan": "node scripts/scan.mjs",
+    "verify": "npm run build && npm run smoke && npm run scan",
     "check": "tsc --noEmit"
   },
   "devDependencies": {

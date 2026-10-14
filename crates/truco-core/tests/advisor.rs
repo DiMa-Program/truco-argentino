@@ -525,3 +525,114 @@ fn subir_es_menor_que_querer_cuando_no_tengo_nada_que_raspar() {
         "blufear el 28-33 sin tener nada tiene que ser peor que querer: {falta} contra {quiero}"
     );
 }
+
+/// El agrupado de manos del rival es una optimización. Este test la desarma.
+///
+/// `best_play` agrupa las manos candidatas para no correr el solver 7.770
+/// veces: si respondo, agrupa por el perfil de las DOS cartas que le quedan al
+/// rival. Si esa agrupación pierde o inventa manos, las probabilidades salen
+/// mal y no se nota mirando el resultado: hay que compararlo contra la cuenta
+/// ingenua, carta por carta.
+///
+/// La cuenta ingenua es la definición: para cada mano posible del rival que
+/// tenga la carta que salió, se le saca esa carta y se corre el solver con las
+/// cartas reales.
+#[test]
+fn el_agrupado_por_perfil_da_lo_mismo_que_la_cuenta_ingenua() {
+    use truco_core::testutil::catalog_ref;
+    use truco_core::trickplay;
+
+    let my_hand = mano_33();
+    let model = OpponentModel::neutral();
+    let belief = belief_for(my_hand, true, model);
+    let adv = advisor(model, Score { a: 0, b: 0 }, true);
+    let mine = my_hand.cards();
+
+    // Cartas que NO son mías: mano_33 es 7e + 6e + 3c.
+    for texto in ["4 de oros", "1 de bastos", "5 de copas", "1 de espada", "2 de bastos"] {
+        let lead = truco_core::cards::parse_card(texto).unwrap();
+        let rapido = adv.best_play(my_hand, Some(lead), 0, 0, &belief);
+        assert!(rapido.card.is_some(), "{texto}: el agrupado tiene que dar una carta");
+
+        // Cuenta ingenua: cada candidato por separado, con sus cartas reales.
+        let mut sumas = vec![0.0f64; mine.len()];
+        let mut total = 0.0f64;
+        for (index, peso) in belief.iter_candidates() {
+            let cartas = catalog_ref()[index].cards();
+            let Some(pos) = cartas.iter().position(|c| *c == lead) else {
+                continue;
+            };
+            let resto: Vec<_> =
+                (0..3).filter(|i| *i != pos).map(|i| cartas[i]).collect();
+            let valores = trickplay::follow_values(mine, &resto, lead, 0, 0, 0);
+            for (i, gana) in valores.iter().enumerate() {
+                sumas[i] += peso * (*gana as u8 as f64);
+            }
+            total += peso;
+        }
+        assert!(total > 0.0, "{texto}: debería haber manos con esa carta");
+
+        for (i, carta) in mine.iter().enumerate() {
+            let ingenua = sumas[i];
+            let rapido_p = rapido
+                .alternatives
+                .iter()
+                .find(|(c, _)| c == carta)
+                .map(|(_, p)| *p)
+                .unwrap_or(0.0);
+            assert!(
+                (ingenua - rapido_p).abs() < 1e-9,
+                "{texto} / {carta}: agrupado {rapido_p} contra ingenua {ingenua}"
+            );
+        }
+    }
+}
+
+/// Si la salida es una carta que el rival no puede tener, no hay consejo que
+/// dar. Antes la app recomendaba la carta de mayor índice con 0 % y decía
+/// cuántas manos tenía el rival, un número que no usó.
+#[test]
+fn una_salida_imposible_no_inventa_una_recomendacion() {
+    let my_hand = mano_33();
+    let model = OpponentModel::neutral();
+    let adv = advisor(model, Score { a: 0, b: 0 }, true);
+
+    // El belief tiene que estar tan concentrado que no quede ninguna mano con
+    // esa carta: observo que el rival tiene las otras dos.
+    let mut estado = BeliefState::new(my_hand, true);
+    let deck = truco_core::cards::Deck::new();
+    for i in 0..deck.cards().len() {
+        let c = deck.cards()[i];
+        if !my_hand.contains(c) {
+            estado.observe(Observation::HasCard(c));
+        }
+    }
+    let belief = estado.compute(&model);
+    let imposible = my_hand.cards()[0];
+
+    let r = adv.best_play(my_hand, Some(imposible), 0, 0, &belief);
+    assert!(r.card.is_none(), "una carta propia no puede ser la salida");
+    assert!(
+        r.reasons.iter().any(|x| x.contains("tu mano")),
+        "tiene que explicar por qué: {:?}",
+        r.reasons
+    );
+}
+
+/// Con la mano ya cerrada por dos bazas no hay nada que recomendar.
+#[test]
+fn con_la_mano_cerrada_no_hay_que_jugar() {
+    let my_hand = mano_33();
+    let model = OpponentModel::neutral();
+    let belief = belief_for(my_hand, true, model);
+    let adv = advisor(model, Score { a: 0, b: 0 }, true);
+
+    for (mias, suyas) in [(2, 0), (0, 2), (2, 2)] {
+        let r = adv.best_play(my_hand, None, mias, suyas, &belief);
+        assert!(r.card.is_none(), "bazas {mias}-{suyas}: la mano ya está");
+        assert!(!r.alternatives.is_empty() || r.card.is_none());
+    }
+    // Y con la mano viva sigue habiendo carta.
+    let viva = adv.best_play(my_hand, None, 1, 1, &belief);
+    assert!(viva.card.is_some(), "a 1-1 falta una baza: hay que jugar");
+}

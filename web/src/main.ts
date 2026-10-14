@@ -304,8 +304,19 @@ function seccionObservaciones(): HTMLElement {
     if (texto === "") {
       estado.declarado = null;
     } else {
-      estado.declarado = Number(texto);
-      motor.observeDeclared(Number(texto));
+      const valor = Number(texto);
+      // El motor valida que el tanto esté entre 20 y 33. El desplegable solo
+      // ofrece ese rango, pero si alguna vez no lo hiciera, avisamos en vez de
+      // dejar que reviente la excepción.
+      try {
+        motor.observeDeclared(valor);
+        estado.declarado = valor;
+      } catch (error) {
+        estado.declarado = null;
+        declarada.value = "";
+        render();
+        return;
+      }
     }
     render();
   });
@@ -485,10 +496,18 @@ function seccionJuego(listo: boolean, deck: CardInfo[]): HTMLElement {
   const ms = performance.now() - inicio;
 
   const principal = el("div", "recomendacion");
-  principal.append(
-    el("div", "accion-grande", consejo.card ?? "—"),
-    el("div", "confianza", `ganás la mano el ${(consejo.win_prob * 100).toFixed(0)} %`),
-  );
+  if (consejo.card === null) {
+    // El motor ahora dice "no hay nada que jugar" en vez de recomendar con 0 %.
+    principal.append(
+      el("div", "accion-grande", "—"),
+      el("div", "confianza", "no hay nada que jugar"),
+    );
+  } else {
+    principal.append(
+      el("div", "accion-grande", consejo.card),
+      el("div", "confianza", `ganás la mano el ${(consejo.win_prob * 100).toFixed(0)} %`),
+    );
+  }
   caja.append(principal);
 
   const lista = el("ul", "opciones");
@@ -532,12 +551,18 @@ function selectorTurno(deck: CardInfo[]): HTMLElement {
   if (estado.respondiendo) {
     const selector = document.createElement("select");
     selector.className = "selector";
-    for (const carta of deck) {
+    // Solo las cartas que NO tengo: una carta propia no puede ser la salida
+    // del rival, y ofrecerla hacía que la app recomendara con 0 %.
+    const posibles = deck.filter((carta) => !estado.mano.includes(carta.index));
+    for (const carta of posibles.length > 0 ? posibles : deck) {
       const opcion = document.createElement("option");
       opcion.value = String(carta.index);
       opcion.textContent = `salida: ${carta.name}`;
       opcion.selected = carta.index === estado.cartaRival;
       selector.append(opcion);
+    }
+    if (estado.cartaRival !== undefined && !posibles.some((c) => c.index === estado.cartaRival)) {
+      estado.cartaRival = posibles[0]?.index;
     }
     selector.addEventListener("change", () => {
       estado.cartaRival = Number(selector.value);
@@ -553,9 +578,15 @@ function filaMarcadorBazas(): HTMLElement {
   const fila = el("div", "fila-puntos bazas");
   const mover = (cuales: "mias" | "suyas", delta: number) => {
     if (cuales === "mias") {
-      estado.bazasMias = Math.max(0, Math.min(2, estado.bazasMias + delta));
+      const nuevo = Math.max(0, Math.min(2, estado.bazasMias + delta));
+      // Tres bazas por mano y se cierra en la segunda: la suma nunca pasa de
+      // 2. Dejarla pasar metía a la app en un estado imposible y la rompía.
+      if (nuevo + estado.bazasSuyas > 2) return;
+      estado.bazasMias = nuevo;
     } else {
-      estado.bazasSuyas = Math.max(0, Math.min(2, estado.bazasSuyas + delta));
+      const nuevo = Math.max(0, Math.min(2, estado.bazasSuyas + delta));
+      if (estado.bazasMias + nuevo > 2) return;
+      estado.bazasSuyas = nuevo;
     }
     render();
   };
@@ -602,8 +633,13 @@ function alternarCarta(indice: number): void {
  * pantalla prometería un consejoCONDICIONADO y daría el del prior.
  */
 function reaplicarObservaciones(): void {
-  if (estado.declarado !== null) {
+  if (estado.declarado === null) return;
+  try {
     motor.observeDeclared(estado.declarado);
+  } catch {
+    // Si el motor no acepta el tanto, la observación queda sin registrar. Es
+    // preferible a reventar: el resto de la app sigue funcionando.
+    estado.declarado = null;
   }
 }
 
