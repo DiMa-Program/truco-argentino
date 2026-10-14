@@ -586,8 +586,13 @@ function alternarCarta(indice: number): void {
   } else {
     return; // tres cartas y una más: se ignora, no se sacan las viejas
   }
-  motor.setHand(estado.mano);
-  reaplicarObservaciones();
+  // El motor exige una mano completa: `setHand` tira si no son tres cartas.
+  // Recién cargarla cuando llegó a tres, porque si no, tocar la PRIMERA carta
+  // rompía la app entera. El smoke no lo veía porque siempre llama con tres.
+  if (estado.mano.length === 3) {
+    motor.setHand(estado.mano);
+    reaplicarObservaciones();
+  }
   render();
 }
 
@@ -604,7 +609,6 @@ function reaplicarObservaciones(): void {
 
 function resumenMano(): string {
   if (estado.mano.length === 0) return "Tocá tres cartas.";
-  const info = motor.snapshot;
   const partesTexto = estado.mano
     .map((i) => {
       const carta = motor.deck[i];
@@ -612,6 +616,8 @@ function resumenMano(): string {
     })
     .join(" · ");
   if (estado.mano.length < 3) return `${partesTexto} (${estado.mano.length}/3)`;
+  // `snapshot` necesita la mano cargada en el motor, y solo lo está con tres.
+  const info = motor.snapshot;
   const tanto = info.my_envido;
   const par = tanto >= 20;
   return `${partesTexto} · envido ${par ? tanto : "no tenés"} · flor ${info.has_flor ? "sí" : "no"}`;

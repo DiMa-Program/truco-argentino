@@ -127,6 +127,32 @@ try {
 }
 chequeo(erroBien, "una mano con carta repetida da error, no un valor raro");
 
+// El motor exige una mano COMPLETA. La UI tiene que esperar a la tercera carta
+// antes de llamar setHand: hacerlo con una o dos revienta la app al tocar la
+// primera carta. Este chequeo no prueba el fix, pero deja escrito el contrato
+// para que nadie asuma que una mano parcial se puede cargar.
+let manoParcial = false;
+try {
+  motor.setHand(Uint8Array.from([1, 2]));
+} catch {
+  manoParcial = true;
+}
+chequeo(
+  manoParcial,
+  "setHand con una mano incompleta tira: la UI tiene que esperar a tres cartas",
+);
+
+let snapshotSinMano = false;
+try {
+  // Instancia nueva, sin mano. snapshot tiene que avisar que falta setHand en
+  // vez de devolver un objeto vacío: la UI usa ese error para no dibujar un
+  // consejo basado en una belief que no existe.
+  new Truco().snapshot();
+} catch {
+  snapshotSinMano = true;
+}
+chequeo(snapshotSinMano, "y snapshot sin mano da error, no un objeto vacío");
+
 // --- Qué carta jugar -----------------------------------------------------
 
 motor.setScore(0, 0);
