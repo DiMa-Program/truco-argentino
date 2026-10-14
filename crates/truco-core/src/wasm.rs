@@ -11,18 +11,21 @@
 //!
 //! Hoy expone **el consejo del envido**, que es la decisión que tiene la
 //! matemática resuelta: tablas exactas, belief bayesiana y el equilibrio de CFR.
+//! Las dos caras: [`Truco::advice`] para abrir la secuencia y
+//! [`Truco::response_advice`] para contestarle al rival. También expone
+//! [`Truco::best_play`] para la baza en curso.
 //!
 //! Lo que **no** expone todavía:
 //!
-//! - El consejo de bazas. Necesita promediar el minimax sobre la belief.
 //! - La máquina de estados completa (`match_state.rs`). Requiere las dos manos
 //!   y en 1v1 no se conoce la del rival; usar una de relleno haría que la
 //!   resolución del envido saliera falsa. Por eso acá se lleva el estado del
 //!   envido en la [`BeliefState`] y no en un `HandState`.
 //! - Flor y truco, más allá del aviso de que la flor es obligatoria.
 
-use crate::advisor::{Advisor, Confidence, EnvidoMove};
+use crate::advisor::{Advisor, Confidence, EnvidoMove, ResponseMove};
 use crate::belief::{BeliefState, Observation};
+use crate::bets::{EnvidoCall, EnvidoSeq};
 use crate::cards::Card;
 use crate::envido_policy::EnvidoPolicy;
 use crate::hand::Hand3;
@@ -78,6 +81,29 @@ struct OptionJson {
     points: u32,
     is_bluff: bool,
     declared: u8,
+}
+
+/// La respuesta a un canto: quiero, no quiero o subir.
+#[derive(serde::Serialize)]
+struct ResponseJson {
+    /// `"quiero"`, `"no-quiero"`, `"subir-envido"`, `"subir-real-envido"` o
+    /// `"subir-falta-envido"`.
+    recommended: String,
+    confidence: String,
+    /// Mi probabilidad de ganar el envido si aceptan.
+    p_win_if_wanted: f64,
+    /// Tantos que declaró el rival.
+    declared: u8,
+    options: Vec<ResponseOptionJson>,
+    reasons: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+struct ResponseOptionJson {
+    choice: String,
+    ev: f64,
+    points: u32,
+    equilibrium_mass: f64,
 }
 
 /// El motor que corre dentro del navegador.
@@ -281,6 +307,55 @@ impl Truco {
         serde_json::to_string(&json).map_err(js)
     }
 
+    /// Qué responder a un canto del rival, en JSON.
+    ///
+    /// `seq` es la secuencia de cantos hasta ahora, escrita como los nombres
+    /// separados por coma: `"envido"`, `"envido,envido"`,
+    /// `"envido,real-envido"`, `"envido,falta-envido"`. Vacío significa que
+    /// todavía no cantó ninguno.
+    ///
+    /// La UI es la dueña de la secuencia y la pasa entera en cada consulta.
+    /// Así no hay estado oculto que se pueda desincronizar con lo que pasó en
+    /// la mesa real, que es lo que realmente importa: si el motor cree que van
+    /// dos envidos y vos cantaste uno, el consejo es basura.
+    ///
+    /// **Requisito**: hay que llamar a [`Truco::observe_declared`] con el mismo
+    /// `declared` antes de consultar. La respuesta necesita la belief
+    /// condicionada a lo que dijo el rival; sin eso, `p_win_if_wanted` mide la
+    /// fuerza del rival y no la tuya.
+    #[wasm_bindgen(js_name = responseAdvice)]
+    pub fn response_advice(&self, seq: &str, declared: u8) -> Result<String, JsError> {
+        let (hand, state) = self.hand_and_state()?;
+        let policy = self.policy.as_ref().ok_or_else(|| JsError::new("falta la policy"))?;
+        let seq = parse_envido_seq(seq)?;
+        if seq.is_empty() {
+            return Err(JsError::new("no hay canto al que responder"));
+        }
+        let belief = state.compute(&self.model);
+        let advisor =
+            Advisor { policy, model: self.model, config: self.config, score: self.score, i_am_mano: self.i_am_mano };
+        let advice = advisor.envido_response(seq, declared, hand, &belief);
+
+        let json = ResponseJson {
+            recommended: response_move_label(advice.recommended).to_string(),
+            confidence: confidence_label(advice.confidence).to_string(),
+            p_win_if_wanted: advice.p_win_if_wanted,
+            declared,
+            options: advice
+                .options
+                .iter()
+                .map(|o| ResponseOptionJson {
+                    choice: response_move_label(o.choice).to_string(),
+                    ev: o.ev,
+                    points: o.points,
+                    equilibrium_mass: o.equilibrium_mass,
+                })
+                .collect(),
+            reasons: advice.reasons,
+        };
+        serde_json::to_string(&json).map_err(js)
+    }
+
     /// Las 40 cartas con su nombre corto, para que la UI no las tenga que
     /// hardcodear.
     pub fn deck(&self) -> Result<String, JsError> {
@@ -351,6 +426,51 @@ fn move_label(choice: EnvidoMove) -> &'static str {
         EnvidoMove::StaySilent => "callarse",
         EnvidoMove::Call(_) => choice.label(),
     }
+}
+
+/// El nombre corto de una respuesta, como lo usa la UI.
+///
+/// Sin espacios ni acentos porque va a ser un valor de `data-choice` que el
+/// HTML después tiene que poder volver a leer.
+fn response_move_label(choice: ResponseMove) -> &'static str {
+    match choice {
+        ResponseMove::Quiero => "quiero",
+        ResponseMove::NoQuiero => "no-quiero",
+        ResponseMove::Subir(EnvidoCall::Envido) => "subir-envido",
+        ResponseMove::Subir(EnvidoCall::RealEnvido) => "subir-real-envido",
+        ResponseMove::Subir(EnvidoCall::FaltaEnvido) => "subir-falta-envido",
+    }
+}
+
+/// Interpreta la secuencia de cantos que la UI pasó como texto.
+///
+/// Acepta `"envido,real-envido"` y también espacios de más. Se arma la
+/// secuencia songando los cantos, así que una secuencia ilegal (un tercer
+/// envido, o un real después de una falta) se rechaza acá con un mensaje
+/// claro en vez de producir un `can_elevate` que revienta más abajo.
+fn parse_envido_seq(text: &str) -> Result<EnvidoSeq, JsError> {
+    let mut seq = EnvidoSeq::Empty;
+    for piece in text.split(',') {
+        let call = match piece.trim() {
+            "" => continue,
+            "envido" => EnvidoCall::Envido,
+            "real-envido" | "real envido" => EnvidoCall::RealEnvido,
+            "falta-envido" | "falta envido" => EnvidoCall::FaltaEnvido,
+            otro => {
+                return Err(JsError::new(&format!(
+                    "canto desconocido: {otro}. Va envido, real-envido o falta-envido"
+                )))
+            }
+        };
+        if !seq.can_elevate(call) {
+            return Err(JsError::new(&format!(
+                "no se puede subir a {} desde {seq:?}",
+                call.name()
+            )));
+        }
+        seq = seq.elevate(call);
+    }
+    Ok(seq)
 }
 
 fn confidence_label(confidence: Confidence) -> &'static str {

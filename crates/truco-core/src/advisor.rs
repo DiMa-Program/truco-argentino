@@ -114,6 +114,54 @@ pub struct EnvidoAdvice {
     pub reasons: Vec<String>,
 }
 
+/// Qué se puede hacer cuando el rival ya cantó.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ResponseMove {
+    /// "Quiero": se comparan los tantos.
+    Quiero,
+    /// "No quiero": el rival se lleva lo acumulado.
+    NoQuiero,
+    /// Subir la apuesta.
+    Subir(EnvidoCall),
+}
+
+impl ResponseMove {
+    pub fn label(self) -> String {
+        match self {
+            ResponseMove::Quiero => String::from("quiero"),
+            ResponseMove::NoQuiero => String::from("no quiero"),
+            ResponseMove::Subir(EnvidoCall::Envido) => String::from("subo a envido"),
+            ResponseMove::Subir(EnvidoCall::RealEnvido) => String::from("subo a real envido"),
+            ResponseMove::Subir(EnvidoCall::FaltaEnvido) => String::from("subo a falta envido"),
+        }
+    }
+}
+
+/// Una opción de respuesta con su valor esperado.
+#[derive(Clone, Debug)]
+pub struct ResponseOption {
+    pub choice: ResponseMove,
+    /// Puntos esperados, en positivo si conviene.
+    pub ev: f64,
+    /// Lo que el equilibrio le pone a esta acción. No decide: es la opinión
+    /// del CFR contra alguien que juega el juego.
+    pub equilibrium_mass: f64,
+    /// Puntos que se juegan o se cobran.
+    pub points: u32,
+}
+
+/// La recomendación para responder a un canto.
+#[derive(Clone, Debug)]
+pub struct ResponseAdvice {
+    pub recommended: ResponseMove,
+    pub confidence: Confidence,
+    /// Mi probabilidad de ganar el envido si aceptan.
+    pub p_win_if_wanted: f64,
+    /// Todas las opciones, de mayor a menor EV.
+    pub options: Vec<ResponseOption>,
+    pub reasons: Vec<String>,
+}
+
 /// Qué carta conviene jugar, y con cuánta confianza.
 #[derive(Clone, Debug)]
 pub struct PlayAdvice {
@@ -167,13 +215,33 @@ impl Advisor<'_> {
         }
     }
 
-    /// `P(yo gano el envido si declaro `value`)`.
-    ///
-    /// Ojo con el nombre de la función de la belief: `p_envido_beat` dice
-    /// cuántos lo ganan **ellos**. Acá va el complemento.
-    pub fn p_win_declared(&self, value: u8, belief: &Belief) -> f64 {
-        1.0 - belief.p_envido_beat(value)
-    }
+    /// `P(gano el envido)`.
+///
+/// `belief` tiene que estar condicionada a lo que declaró el rival: si no,
+/// esto responde "¿cuál es su tanto?" en vez de "¿lo gano?". En la apertura eso
+/// significa solo mi mano; respondiendo, además la declaración.
+///
+/// **Ojo**: `Belief::p_envido_beat` NO sirve para esto. Esa función mide qué
+/// tan fuerte es el **rival**, no si gano yo. Con una mano sin par devolvía
+/// 0,99 de "ganar" un 27 declarado, que es lo contrario de la verdad. Acá se
+/// compara contra **mi** tanto, que es un dato que ya conozco.
+pub fn p_win_declared(&self, my_hand: Hand3, belief: &Belief) -> f64 {
+    let mine = my_hand.envido();
+    let catalog = catalog_ref();
+    belief
+        .iter_candidates()
+        .filter(|(index, _)| {
+            let their = catalog[*index].envido();
+            // En el empate gana el mano.
+            if self.i_am_mano {
+                their <= mine
+            } else {
+                their < mine
+            }
+        })
+        .map(|(_, p)| p)
+        .sum()
+}
 
     /// `P(el rival acepta un canto de `declared` puntos)`.
     ///
@@ -226,7 +294,7 @@ impl Advisor<'_> {
             return Vec::new();
         }
         let value = my_hand.envido();
-        let p_win = self.p_win_declared(value, belief);
+        let p_win = self.p_win_declared(my_hand, belief);
         [EnvidoSeq::E, EnvidoSeq::R, EnvidoSeq::F]
             .into_iter()
             .map(|seq| {
@@ -321,7 +389,7 @@ impl Advisor<'_> {
             Confidence::Mixed
         };
 
-        let p_win_envido = if tengo_par { self.p_win_declared(my_value, belief) } else { 0.0 };
+        let p_win_envido = if tengo_par { self.p_win_declared(my_hand, belief) } else { 0.0 };
         let points_at_stake = EnvidoSeq::E.points_if_accepted(Some(self.falta_value()));
         let reasons = self.reasons(&options, my_value, tengo_par, &p_win_envido);
 
@@ -526,6 +594,146 @@ impl Advisor<'_> {
             out.push("la falta envido de esta posición cierra el partido".to_string());
         }
         out
+    }
+
+    /// `P(me aguantan una subida)`, es decir, con qué frecuencia dicen "quiero"
+/// a un "subo a real/falta envido".
+///
+/// Subir no es subir la apuesta: es **afirmar un tanto más alto**. Después de
+/// un 27, "subo a falta envido" es afirmar 28-33. El rival decide contra esa
+/// afirmación, no contra lo que declaró él antes, así que hay que puntuar su
+/// mano contra **mi** afirmación.
+///
+/// Acá está el bluff: con un 5 de envido afirmando 28, el margen es `-23` y
+/// la verosimilitud de que te aguanten cae a cero. Te ven perdedor y se
+/// achican. Con un 33 de verdad, el margen es a favor y te aguantan más.
+pub fn p_they_take_my_raise(&self, claimed: u8, belief: &Belief) -> f64 {
+    let catalog = catalog_ref();
+    belief
+        .iter_candidates()
+        .map(|(index, p)| {
+            p * envido_accept_likelihood(catalog[index].envido(), claimed, &self.model)
+        })
+        .sum()
+}
+
+/// EV de aceptar un canto en juego.
+///
+/// **Acá faltaba la mitad del cálculo**: se contaba `p_win * puntos` pero no
+/// la rama en la que pierdo. Con eso todo salía positivo y el advisor
+/// recomendaba subir siempre, incluso con 5 de envido affirming 33.
+///
+/// Si gano el envido me llevo `puntos`; si lo pierdo, el rival se los lleva.
+/// El EV neto es `(2 * p_win - 1) * puntos`: negativo apenas es perdedor.
+fn ev_aceptar(p_win: f64, puntos: u32) -> f64 {
+    (2.0 * p_win - 1.0) * puntos as f64
+}
+
+/// Qué hacer cuando el rival cantó: quiero, no quiero o subir.
+    ///
+    /// Es la otra mitad de la decisión del envido, y la que más cuesta. La
+    /// [`EnvidoPolicy`] ya tiene la respuesta de equilibrio en **todos** los nodos;
+    /// lo que faltaba era cruzarla con la belief.
+    ///
+    /// # Cómo se lee la policy
+    ///
+    /// La grilla está indexada por `p_win` = **la probabilidad de que gane el
+    /// jugador 0**. Para que el consejo sea sobre vos, hay que pasar *tu*
+    /// probabilidad y leer el nodo de *tu* turno. Mezclar esos dos da el consejo
+    /// exactamente al revés, y por eso va anotado acá y en `probe_policy.rs`.
+    ///
+    /// `belief` tiene que venir **condicionada a lo que declaró el rival**: si
+    /// no, `p_win` es la probabilidad de que él tenga menos que el tanto
+    /// declarado, que es lo mismo para cualquier mano y no dice nada sobre vos.
+    pub fn envido_response(
+        &self,
+        seq: EnvidoSeq,
+        declared: u8,
+        my_hand: Hand3,
+        belief: &Belief,
+    ) -> ResponseAdvice {
+        debug_assert!(!seq.is_empty(), "se responde a un canto, no a la nada");
+        let falta = self.falta_value();
+        let p_win = self.p_win_declared(my_hand, belief);
+        let p_aceptan = self.p_they_want(declared, belief);
+
+        // Nodo de turno 0: la policy se arma desde el punto de vista del
+        // jugador 0, así que "yo" soy ese y le paso mi propia probabilidad.
+        let equilibrio = self.policy.strategy(p_win, falta, seq, 0);
+        let masa = |accion: crate::envido_solver::EnvidoAction| {
+            equilibrio.iter().find(|(a, _)| *a == accion).map(|(_, m)| *m).unwrap_or(0.0)
+        };
+
+        let aceptados = seq.points_if_accepted(seq.is_falta().then_some(falta));
+        let declinados = seq.points_if_declined();
+
+        let mut opciones = vec![
+            ResponseOption {
+                choice: ResponseMove::Quiero,
+                ev: Self::ev_aceptar(p_win, aceptados),
+                equilibrium_mass: masa(crate::envido_solver::EnvidoAction::Accept),
+                points: aceptados,
+            },
+            ResponseOption {
+                choice: ResponseMove::NoQuiero,
+                ev: -(declinados as f64),
+                equilibrium_mass: masa(crate::envido_solver::EnvidoAction::Decline),
+                points: declinados,
+            },
+        ];
+
+        for call in [EnvidoCall::RealEnvido, EnvidoCall::FaltaEnvido] {
+            if !seq.can_elevate(call) {
+                continue;
+            }
+            let subida = seq.elevate(call);
+            let puntos = subida.points_if_accepted(subida.is_falta().then_some(falta));
+            // Si se achica, el rival se queda con lo que valía SU canto
+            // original, no con la subida: no quiero un envido me cobra lo que
+            // había cantado, no lo que yo pedí.
+            let se_achica = -(declinados as f64);
+            // La afirmación mínima que implica la subida. Es contra esto
+            // contra lo que decide el rival al decir "quiero".
+            let afirmo = if call == EnvidoCall::FaltaEnvido { 28 } else { 31 };
+            let p_me_aguantan = self.p_they_take_my_raise(afirmo, belief);
+            let ev = (1.0 - p_me_aguantan) * se_achica
+                + p_me_aguantan * Self::ev_aceptar(p_win, puntos);
+            opciones.push(ResponseOption {
+                choice: ResponseMove::Subir(call),
+                ev,
+                equilibrium_mass: masa(crate::envido_solver::EnvidoAction::Call(call)),
+                points: puntos,
+            });
+        }
+
+        opciones.sort_by(|a, b| b.ev.partial_cmp(&a.ev).unwrap_or(std::cmp::Ordering::Equal));
+
+        let top = opciones.first().map(|o| o.ev).unwrap_or(0.0);
+        let second = opciones.get(1).map(|o| o.ev).unwrap_or(0.0);
+        let confidence = if top - second > 0.5 { Confidence::Clear } else { Confidence::Mixed };
+        let recommended =
+            opciones.first().map(|o| o.choice).unwrap_or(ResponseMove::NoQuiero);
+
+        let mut reasons = vec![format!(
+            "cantaron {declared}: lo ganás el {:.0} % y te lo quieren el {:.0} %",
+            p_win * 100.0,
+            p_aceptan * 100.0
+        )];
+        for o in opciones.iter().take(4) {
+            let eq = if o.equilibrium_mass > 0.005 {
+                format!("el equilibrio le pone {:.0} %", o.equilibrium_mass * 100.0)
+            } else {
+                String::from("el equilibrio no lo juega nunca")
+            };
+            reasons.push(format!(
+                "{}: EV {:+.2} puntos · {} en juego · {eq}",
+                o.choice.label(),
+                o.ev,
+                o.points
+            ));
+        }
+
+        ResponseAdvice { recommended, confidence, p_win_if_wanted: p_win, options: opciones, reasons }
     }
 }
 

@@ -254,11 +254,11 @@ fn el_mano_gana_los_empates() {
 
     let como_mano = {
         let belief = belief_for(my_hand, true, model);
-        advisor(model, Score { a: 0, b: 0 }, true).p_win_declared(27, &belief)
+        advisor(model, Score { a: 0, b: 0 }, true).p_win_declared(my_hand, &belief)
     };
     let como_no_mano = {
         let belief = belief_for(my_hand, false, model);
-        advisor(model, Score { a: 0, b: 0 }, false).p_win_declared(27, &belief)
+        advisor(model, Score { a: 0, b: 0 }, false).p_win_declared(my_hand, &belief)
     };
     assert!(
         como_mano > como_no_mano,
@@ -407,14 +407,121 @@ fn observar_al_rival_concentra_y_cambia_el_calculo() {
     let p_despues =
         despues.options.iter().find(|o| o.choice == envido_call).unwrap().p_they_want;
 
-    assert!(
-        despues_belief.n() < antes_belief.n(),
-        "observar tiene que reducir los candidatos: {} contra {}",
+    // Declarar un tanto NO descarta manos (es una afirmación, no un hecho),
+    // pero tiene que cambiar el cálculo. Si `n()` bajara, estaríamos volviendo
+    // al error de tratar la declaración como un dato duro.
+    assert_eq!(
         despues_belief.n(),
-        antes_belief.n()
+        antes_belief.n(),
+        "una declaración blanda no descarta candidatos"
+    );
+    assert!(
+        (despues_belief.p_envido(31) - antes_belief.p_envido(31)).abs() > 1e-6,
+        "pero mueve la masa: {} contra {}",
+        antes_belief.p_envido(31),
+        despues_belief.p_envido(31)
+    );
+    assert!(
+        despues_belief.p_envido(31) > 0.5,
+        "y se tiene que concentrar en lo que declaró: {}",
+        despues_belief.p_envido(31)
     );
     assert!(
         (p_despues - p_antes).abs() > 1e-6,
         "la belief nueva tiene que cambiar el cálculo de cuántos aceptan: {p_antes} contra {p_despues}"
+    );
+}
+
+/// Construye el escenario: me cantaron `declarado` y quiero responder.
+fn responder(
+    my_hand: Hand3,
+    declarado: u8,
+    score: Score,
+    model: OpponentModel,
+) -> truco_core::advisor::ResponseAdvice {
+    let mut estado = BeliefState::new(my_hand, true);
+    estado.observe(Observation::CalledEnvido(true));
+    estado.observe(Observation::DeclaredEnvido(declarado));
+    let belief = estado.compute(&model);
+    advisor(model, score, true).envido_response(
+        truco_core::bets::EnvidoSeq::E,
+        declarado,
+        my_hand,
+        &belief,
+    )
+}
+
+fn ev_de(r: &truco_core::advisor::ResponseAdvice, choice: truco_core::advisor::ResponseMove) -> f64 {
+    r.options.iter().find(|o| o.choice == choice).unwrap().ev
+}
+
+#[test]
+fn contra_un_envido_bajo_alcanza_con_querer() {
+    // Cantaron 27 y tengo 33. El envido ya está definido: quiero y me llevo
+    // los 2 puntos. Subir no agrega nada y arriesga.
+    let r = responder(mano_33(), 27, Score { a: 10, b: 20 }, OpponentModel::neutral());
+    assert_eq!(r.recommended, truco_core::advisor::ResponseMove::Quiero, "con 33 contra 27 se quiere");
+    assert!(ev_de(&r, truco_core::advisor::ResponseMove::Quiero) > 1.0);
+    assert!(
+        ev_de(&r, truco_core::advisor::ResponseMove::Subir(truco_core::bets::EnvidoCall::FaltaEnvido))
+            < ev_de(&r, truco_core::advisor::ResponseMove::Quiero),
+        "ya ganando el envido no tiene sentido quemarlo subiendo"
+    );
+}
+
+#[test]
+fn contra_un_envido_alto_conviene_subir_a_falta() {
+    // Cantaron 31 y tengo 33. Acá sí: si me aguantan el "falta envido" me
+    // llevo 5 en vez de 2, y como tienen tanto alto, me aguantan seguido.
+    let r = responder(mano_33(), 31, Score { a: 10, b: 20 }, OpponentModel::neutral());
+    assert_eq!(
+        r.recommended,
+        truco_core::advisor::ResponseMove::Subir(truco_core::bets::EnvidoCall::FaltaEnvido),
+        "contra un 31 con 33 mío conviene subir a falta envido"
+    );
+    assert!(
+        ev_de(&r, truco_core::advisor::ResponseMove::Subir(truco_core::bets::EnvidoCall::FaltaEnvido)) > 2.0,
+        "tiene que superar el 2 del quiero simple"
+    );
+}
+
+#[test]
+fn sin_mano_no_se_acepta_nada() {
+    let floja = hand(["4 de espada", "5 de copa", "3 de bastos"]);
+    let r = responder(floja, 27, Score { a: 10, b: 20 }, OpponentModel::neutral());
+    assert_eq!(r.recommended, truco_core::advisor::ResponseMove::NoQuiero);
+    assert!(r.p_win_if_wanted < 0.2, "con 5 de envido no tengo nada: {}", r.p_win_if_wanted);
+}
+
+/// El guard más importante de todos.
+///
+/// El EV de aceptar se calculaba antes como `p_win * puntos`, sin la rama en
+/// la que pierdo. Con esa fórmula TODO salía positivo y el advisor recomendaba
+/// subir siempre, incluso con 5 de envido.
+///
+/// El EV correcto es `(2 * p_win - 1) * puntos`: apenas perdedor tiene que dar
+/// negativo. Si esto falla, volvió el sesgo.
+#[test]
+fn el_ev_de_aceptar_es_simetrico_en_la_probabilidad() {
+    for (declarado, mano) in [(27u8, mano_33()), (27u8, hand(["4 de espada", "5 de copa", "3 de bastos"]))] {
+        let r = responder(mano, declarado, Score { a: 10, b: 20 }, OpponentModel::neutral());
+        let quiero = ev_de(&r, truco_core::advisor::ResponseMove::Quiero);
+        if r.p_win_if_wanted > 0.5 {
+            assert!(quiero > 0.0, "favorito tiene que dar EV positivo: {quiero}");
+        } else {
+            assert!(quiero < 0.0, "perdedor tiene que dar EV NEGATIVO, no cero: {quiero}");
+        }
+    }
+}
+
+#[test]
+fn subir_es_menor_que_querer_cuando_no_tengo_nada_que_raspar() {
+    let floja = hand(["4 de espada", "5 de copa", "3 de bastos"]);
+    let r = responder(floja, 27, Score { a: 10, b: 20 }, OpponentModel::neutral());
+    let quiero = ev_de(&r, truco_core::advisor::ResponseMove::Quiero);
+    let falta = ev_de(&r, truco_core::advisor::ResponseMove::Subir(truco_core::bets::EnvidoCall::FaltaEnvido));
+    assert!(
+        falta < quiero,
+        "blufear el 28-33 sin tener nada tiene que ser peor que querer: {falta} contra {quiero}"
     );
 }

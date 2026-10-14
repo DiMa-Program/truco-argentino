@@ -221,6 +221,31 @@ section {
 
 /* --- Observaciones ----------------------------------------------------- */
 
+/* Secuencia de cantos y botones de canto. */
+.secuencia {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+
+.secuencia .cantos {
+  font-size: 0.95rem;
+}
+
+.fila-cantos {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.6rem;
+  align-items: center;
+}
+
+.fila-cantos .nota-belief {
+  margin: 0;
+}
+
 .nota-belief {
   margin: 0.5rem 0 0;
   font-size: 0.8rem;

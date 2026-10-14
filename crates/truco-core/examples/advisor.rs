@@ -123,6 +123,36 @@ fn main() {
     println!("  ({} ms)", consejo_ms);
 
     println!("otros escenarios, para ver cómo cambia:");
+    let manos: [(&str, [&str; 3]); 4] = [
+        ("7e+6e+3c envido 33", ["7 de espada", "6 de espada", "3 de copa"]),
+        ("4o+3o+2b envido 27", ["4 de oros", "3 de oros", "2 de bastos"]),
+        ("6e+2e+3b envido 33", ["6 de espada", "2 de espada", "3 de bastos"]),
+        ("4e+5c+3b sin par  5", ["4 de espada", "5 de copa", "3 de bastos"]),
+    ];
+    for declarado in [20u8, 23, 27, 31, 33] {
+        println!("  · me cantaron {declarado}:");
+        for (nombre, mano) in manos {
+            let h = hand(mano);
+            let mut estado = BeliefState::new(h, true);
+            // Sin esto la belief no sabe qué cantaron y `p_win` es el mismo
+            // para cualquier mano: sería la probabilidad de que tengan menos
+            // que lo que declararon, no la de que YO gane.
+            estado.observe(Observation::CalledEnvido(true));
+            estado.observe(Observation::DeclaredEnvido(declarado));
+            let b = estado.compute(&model);
+            let r = advisor.envido_response(truco_core::bets::EnvidoSeq::E, declarado, h, &b);
+            let detalle = r
+                .options
+                .iter()
+                .map(|o| format!("{} {:+.2}", o.choice.label(), o.ev))
+                .collect::<Vec<_>>()
+                .join("  ");
+            println!("    {nombre:<24} p_win {:.2} → {}", r.p_win_if_wanted, r.recommended.label());
+            println!("      {detalle}");
+        }
+    }
+    println!();
+
     for cartas in [
         ["7 de espada", "6 de espada", "3 de copa"],
         ["4 de oros", "3 de oros", "2 de bastos"],

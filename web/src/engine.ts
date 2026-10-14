@@ -49,6 +49,24 @@ export interface PlayAdvice {
   reasons: string[];
 }
 
+/** Una opción de respuesta a un canto. */
+export interface ResponseOptionJson {
+  choice: string;
+  ev: number;
+  points: number;
+  equilibrium_mass: number;
+}
+
+/** La respuesta a un canto: quiero, no quiero o subir. */
+export interface ResponseAdvice {
+  recommended: string;
+  confidence: string;
+  p_win_if_wanted: number;
+  declared: number;
+  options: ResponseOptionJson[];
+  reasons: string[];
+}
+
 /** La clase que exporta wasm-bindgen. Se tipa acá a mano: no hay tipos. */
 interface TrucoWasm {
   free(): void;
@@ -67,6 +85,7 @@ interface TrucoWasm {
     bazasSuyas: number,
   ): void;
   bestPlay(leadCard: number | undefined, myWins: number, theirWins: number): string;
+  responseAdvice(seq: string, declared: number): string;
   isReady(): boolean;
   snapshot(): string;
   advice(): string;
@@ -151,6 +170,20 @@ export class Engine {
     return JSON.parse(
       this.#requiere().bestPlay(leadCard, myWins, theirWins),
     ) as PlayAdvice;
+  }
+
+  /**
+   * Qué responder a un canto del rival.
+   *
+   * `calls` es la secuencia de cantos hasta ahora, en orden. Se pasa entera en
+   * cada consulta a propósito: si el motor guardara su propia copia, un cambio
+   * de turno mal sincronizado nos daría un consejo sobre una mesa que no
+   * existe.
+   */
+  responseAdvice(calls: readonly string[], declared: number): ResponseAdvice {
+    return JSON.parse(
+      this.#requiere().responseAdvice(calls.join(","), declared),
+    ) as ResponseAdvice;
   }
 
   #requiere(): TrucoWasm {

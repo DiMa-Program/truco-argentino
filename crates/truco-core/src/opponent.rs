@@ -421,6 +421,38 @@ pub fn envido_accept_likelihood(their_value: u8, my_value: u8, model: &OpponentM
     sigmoid(w.envido_accept_base + w.envido_accept_per_point * margin)
 }
 
+/// `P(declara `declared` si de verdad tiene `real`)`.
+///
+/// Declarar un tanto es una **afirmación**, no un hecho: el rival puede estar
+/// mintiendo, y es la razón por la que el envido tiene picardía. Si se tratara
+/// la declaración como dato duro, la belief concluiría que él tiene
+/// exactamente lo que dijo y la pregunta "¿lo gano?" tendría respuesta
+/// trivial en todos los casos.
+///
+/// El modelo tiene tres ramas:
+///
+/// - **Dice la verdad**: lo más común.
+/// - **Declara menos de lo que tiene**: casi nunca. Si yo quiero, declarar bajo
+///   le hace perder puntos: no tiene motivo.
+/// - **Declara más de lo que tiene**: está mintiendo. Y cuanto más grande es el
+///   salto, menos probable: nadie con una mano floja se anima a declarar 33.
+pub fn envido_declare_likelihood(real: u8, declared: u8, model: &OpponentModel) -> f64 {
+    let w = &model.betting;
+    let bluff = w.envido_bluff_rate;
+    if real < 20 {
+        // Sin par no hay tanto que declarar. Solo un bluff descaratado.
+        return bluff * 0.2;
+    }
+    if real == declared {
+        return 1.0 - bluff;
+    }
+    if real > declared {
+        return bluff * 0.05;
+    }
+    let gap = (declared - real) as f64;
+    bluff * (-0.25 * (gap - 1.0)).exp()
+}
+
 /// P(cantó truco | fuerza de su mano y si ya va ganando).
 pub fn truco_call_likelihood(profile: [u8; 3], leading: bool, model: &OpponentModel) -> f64 {
     let w = &model.betting;

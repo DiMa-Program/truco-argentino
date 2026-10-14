@@ -83,15 +83,26 @@ const conCambio = JSON.parse((() => {
 chequeo(conCambio.falta_asymmetric === true, "a 10-20 avisa que la falta no cierra");
 chequeo(conCambio.falta_value === 10, "a 10-20 la falta vale 10", `vale ${conCambio.falta_value}`);
 
-// Observar al rival tiene que reducir los candidatos.
+// Declarar un tanto NO reduce las manos posibles: es una afirmación, no un
+// hecho. Lo que tiene que cambiar es el peso de la belief. Si acá bajara el
+// conteo, estaríamos tratando la declaración como un dato duro y matando el
+// bluff, que es el error que commit 62aa2a8 y siguientes vinieron a arreglar.
 motor.setScore(0, 0);
 motor.setHand(Uint8Array.from([6, 5, 22]));
+const sinDeclarar = JSON.parse(motor.advice());
 motor.observeDeclared(31);
 const concentrado = JSON.parse(motor.snapshot());
 chequeo(
-  concentrado.belief_size < estado.belief_size,
-  "que declare 31 concentra la belief",
+  concentrado.belief_size === estado.belief_size,
+  "declarar no descarta manos, solo las repondera",
   `${estado.belief_size} → ${concentrado.belief_size}`,
+);
+
+const conDeclarar = JSON.parse(motor.advice());
+chequeo(
+  conDeclarar.p_win_envido !== sinDeclarar.p_win_envido,
+  "pero la declaración mueve el cálculo del envido",
+  `antes ${sinDeclarar.p_win_envido.toFixed(3)} después ${conDeclarar.p_win_envido.toFixed(3)}`,
 );
 
 // Modelo del rival cambia la probabilidad de que acepten.
@@ -153,6 +164,73 @@ chequeo(
   respondiendo.alternatives.length === 3,
   "responder trae las tres alternativas",
 );
+
+// --- Respuesta al canto ---------------------------------------------------
+
+// Mano con 33 (7e + 6e + 3c) y marcador 10-20. Cantor en 10-20.
+motor.setScore(10, 20);
+motor.setHand(Uint8Array.from([6, 5, 22]));
+
+motor.observeDeclared(27);
+const contra27 = JSON.parse(motor.responseAdvice("envido", 27));
+const evDe = (r, c) => r.options.find((o) => o.choice === c)?.ev;
+
+chequeo(
+  contra27.recommended === "quiero",
+  "con 33 contra un 27 alcanza con querer",
+  `dijo ${contra27.recommended}`,
+);
+chequeo(
+  evDe(contra27, "quiero") > evDe(contra27, "subir-falta-envido"),
+  "y subir no mejora cuando ya se gana el envido",
+  `quiero ${evDe(contra27, "quiero")} contra falta ${evDe(contra27, "subir-falta-envido")}`,
+);
+
+// Acá subir sí vale: con 33 contra un 31 me aguantan el falta y me llevo 5.
+motor.observeDeclared(31);
+const contra31 = JSON.parse(motor.responseAdvice("envido", 31));
+chequeo(
+  contra31.recommended === "subir-falta-envido",
+  "contra un 31 con 33 conviene subir a falta envido",
+  `dijo ${contra31.recommended}`,
+);
+
+// El guard del sesgo: si el EV de aceptar no es simétrico, volvió el bug de
+// "siempre subir". Con una mano de 5, querer tiene que dar NEGATIVO.
+motor.setHand(Uint8Array.from([7, 18, 19])); // 8e + 5c + 4c: sin par
+motor.observeDeclared(27);
+const floja = JSON.parse(motor.responseAdvice("envido", 27));
+chequeo(
+  evDe(floja, "quiero") < 0,
+  "sin mano, querer da EV negativo",
+  `dio ${evDe(floja, "quiero")}`,
+);
+chequeo(
+  floja.recommended === "no-quiero",
+  "y la respuesta es no quiero",
+  `dijo ${floja.recommended}`,
+);
+
+// Secuencias más largas.
+motor.setHand(Uint8Array.from([6, 5, 22]));
+motor.observeDeclared(31);
+const conDos = JSON.parse(motor.responseAdvice("envido,real-envido", 31));
+chequeo(conDos.options.length > 0, "una secuencia de dos cantos también responde");
+// Tras "envido, real envido" solo queda subir a falta: el reglamento no
+// admite un tercer envido ni un real arriba de un real.
+chequeo(
+  conDos.options.length < contra27.options.length,
+  "con dos cantos quedan menos subidas legales",
+  `dos cantos ${conDos.options.length} contra uno ${contra27.options.length}`,
+);
+
+let secuenciaInvalida = false;
+try {
+  motor.responseAdvice("falta-envido,falta-envido", 27);
+} catch {
+  secuenciaInvalida = true;
+}
+chequeo(secuenciaInvalida, "una secuencia ilegal da error, no un consejo inventado");
 
 motor.free();
 console.log(fallos === 0 ? "\ntodo bien" : `\n${fallos} comprobaciones fallaron`);

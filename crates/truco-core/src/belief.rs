@@ -26,8 +26,9 @@
 use crate::cards::{Card, Deck, DECK_SIZE};
 use crate::hand::Hand3;
 use crate::opponent::{
-    card_play_likelihood, envido_accept_likelihood, envido_call_likelihood, truco_call_likelihood,
-    truco_decline_likelihood, truco_raise_likelihood, OpponentModel, PlayContext,
+    card_play_likelihood, envido_accept_likelihood, envido_call_likelihood,
+    envido_declare_likelihood, truco_call_likelihood, truco_decline_likelihood,
+    truco_raise_likelihood, OpponentModel, PlayContext,
 };
 use crate::profiles::profile3_of;
 use crate::testutil::catalog_ref;
@@ -43,7 +44,8 @@ pub enum Observation {
     HasCard(Card),
     /// El rival no puede tener esta carta (vi que no la tiene).
     LacksCard(Card),
-    /// Declaró este tanto exacto. Después del "quiero" no puede mentir.
+    /// Declaró este tanto. Es **afirmación, no hecho**: el rival puede estar
+    /// mintiendo, y por eso aporta verosimilitud en vez de una restricción.
     DeclaredEnvido(u8),
     /// Dijo "me pasé" o "son buenas": su tanto es menor al mío.
     PassedEnvido { my_value: u8 },
@@ -78,10 +80,9 @@ impl Observation {
     /// blandas son inferencias sobre el estilo del rival.
     pub fn is_hard(&self) -> bool {
         matches!(
-            self,
-            Observation::HasCard(_)
-                | Observation::LacksCard(_)
-                | Observation::DeclaredEnvido(_)
+self,
+    Observation::HasCard(_)
+    | Observation::LacksCard(_)
                 | Observation::PassedEnvido { .. }
                 | Observation::HasFlor
                 | Observation::NoFlor
@@ -178,9 +179,8 @@ fn blocked_cards(&self) -> [bool; DECK_SIZE] {
         for observation in &self.observations {
             // Cada rama devuelve directamente si la mano es incompatible.
             match observation {
-                Observation::HasCard(card) if !hand.contains(*card) => return false,
-                Observation::LacksCard(card) if hand.contains(*card) => return false,
-                Observation::DeclaredEnvido(value) if hand.envido() != *value => return false,
+Observation::HasCard(card) if !hand.contains(*card) => return false,
+    Observation::LacksCard(card) if hand.contains(*card) => return false,
                 Observation::PassedEnvido { my_value } if hand.envido() >= *my_value => return false,
                 Observation::HasFlor if !hand.has_flor() => return false,
                 Observation::NoFlor if hand.has_flor() => return false,
@@ -220,6 +220,9 @@ fn blocked_cards(&self) -> [bool; DECK_SIZE] {
                     1.0 - p
                 }
             }
+            Observation::DeclaredEnvido(declared) => {
+                envido_declare_likelihood(hand.envido(), *declared, model)
+            }
             Observation::CalledTruco(called) => {
                 let p = truco_call_likelihood(profile, self.i_am_mano, model);
                 if *called {
@@ -256,7 +259,6 @@ fn blocked_cards(&self) -> [bool; DECK_SIZE] {
             }
             Observation::HasCard(_)
             | Observation::LacksCard(_)
-            | Observation::DeclaredEnvido(_)
             | Observation::PassedEnvido { .. }
             | Observation::HasFlor
             | Observation::NoFlor => 1.0,
@@ -549,17 +551,60 @@ mod tests {
     }
 
     #[test]
-    fn un_tanto_declarado_es_una_restriccion_dura() {
+    fn un_tanto_declarado_concentra_sin_llegar_a_fijar_la_mano() {
+        // Declarar un tanto es una AFIRMACIÓN. Tratarlo como restricción dura
+        // hacía que la belief concluyera que el rival tiene exactamente lo que
+        // dijo, y entonces la pregunta "¿lo gano?" no dependía de nada.
+        //
+        // Ahora la masa se concentra fuerte pero no del todo: queda una cola
+        // sobre los Bluff, y esa cola es justamente la que hace que el envido
+        // tenga picardía.
         let mut state = BeliefState::new(h(["1 de espada", "3 de copa", "4 de oros"]), true);
+        state.observe(Observation::CalledEnvido(true));
         state.observe(Observation::DeclaredEnvido(31));
         let belief = state.compute(&OpponentModel::neutral());
-        assert!((belief.p_envido(31) - 1.0).abs() < 1e-9);
-        assert!(belief.n() > 0 && belief.n() < OPPONENT_HANDS);
-        // Todas las manos restantes tienen exactamente 31.
-        assert!(belief.top_hands(50).iter().all(|(_, p)| *p > 0.0));
-        for (hand, _) in belief.top_hands(200) {
-            assert_eq!(hand.envido(), 31);
-        }
+
+        let exacto = belief.p_envido(31);
+        assert!(exacto < 1.0, "no puede ser certeza: puede estar mintiendo. {exacto}");
+        assert!(exacto > 0.5, "pero declararlo tiene que pesar fuerte: {exacto}");
+
+        // Y tiene que haber manos con un tanto distinto, aunque sean pocas.
+        let declaro_mas = belief.p_envido_at_least(32);
+        let declaro_menos = 1.0 - belief.p_envido_at_least(20) - declaro_mas;
+        assert!(
+            declaro_mas > 0.0 || declaro_menos > 0.0,
+            "debería quedar alguna mano con otro tanto"
+        );
+    }
+
+    /// Un rival que miente mucho deja menos masa concentrada en lo que dijo.
+    #[test]
+    fn un_mentiroso_deja_menos_masa_en_su_declaracion() {
+        let my_hand = h(["1 de espada", "3 de copa", "4 de oros"]);
+
+        let sincero = OpponentModel::neutral();
+        let mut mentira = sincero.betting;
+        mentira.envido_bluff_rate = 0.6;
+        let mentiroso = OpponentModel {
+            name: "mentiroso",
+            cards: sincero.cards,
+            betting: mentira,
+            flor_rate: sincero.flor_rate,
+        };
+
+        let medir = |model: OpponentModel| {
+            let mut state = BeliefState::new(my_hand, true);
+            state.observe(Observation::CalledEnvido(true));
+            state.observe(Observation::DeclaredEnvido(31));
+            state.compute(&model).p_envido(31)
+        };
+
+        assert!(
+            medir(mentiroso) < medir(sincero),
+            "un mentiroso debería tener menos masa en lo que dice: {} contra {}",
+            medir(mentiroso),
+            medir(sincero)
+        );
     }
 
     #[test]
@@ -748,8 +793,33 @@ mod tests {
         let two = state.compute(&OpponentModel::neutral()).concentration();
 
         assert_eq!(prior, 1.0);
-        assert!(one < prior && two < one, "{prior} -> {one} -> {two}");
-        assert!(two < 0.05, "con un tanto declarado debería quedar muy poca masa");
+        assert!(one < prior, "ver una carta descarta manos: {prior} -> {one}");
+
+        // Ojo: `concentration` es la FRACCIÓN de manos todavía posibles, no la
+        // masa de probabilidad. Una observación blanda repondera pero no
+        // descarta ninguna mano, así que acá el conjunto NO se reduce: lo que
+        // cambia es dónde está el peso. Es la diferencia entre "no tiene esa
+        // carta" y "dijo que tiene ese tanto".
+        assert_eq!(
+            one, two,
+            "declarar un tanto no puede descartar manos: {one} -> {two}"
+        );
+        assert!(
+            moves_mass_without_dropping_hands(),
+            "declarar un tanto tiene que mover la masa"
+        );
+    }
+
+    /// Declarar un tanto cambia la distribución aunque no cambie el conjunto.
+    fn moves_mass_without_dropping_hands() -> bool {
+        let model = OpponentModel::neutral();
+        let mut state = BeliefState::new(h(["2 de copa", "3 de oros", "4 de bastos"]), true);
+        state.observe(Observation::HasCard(parse_card("1 de espada").unwrap()));
+        let antes = state.compute(&model);
+        state.observe(Observation::DeclaredEnvido(28));
+        let despues = state.compute(&model);
+        (antes.p_envido(28) - despues.p_envido(28)).abs() > 1e-9
+            && (antes.p_envido(33) - despues.p_envido(33)).abs() > 1e-9
     }
 
     #[test]

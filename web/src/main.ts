@@ -12,10 +12,38 @@ import {
   type Advice,
   type CardInfo,
   type PlayAdvice,
+  type ResponseAdvice,
   type Snapshot,
 } from "./engine";
 
 const MODELOS = ["promedio", "novato", "pasivo", "agresivo", "tournament"];
+
+/** Cantos válidos, en el orden en que se pueden encadenar. */
+const CANTOS = ["envido", "real-envido", "falta-envido"] as const;
+
+/** Cómo se lee cada respuesta en pantalla. */
+const RESPUESTAS: Record<string, string> = {
+  quiero: "Quiero",
+  "no-quiero": "No quiero",
+  "subir-envido": "Subo envido",
+  "subir-real-envido": "Subo real envido",
+  "subir-falta-envido": "Subo falta envido",
+};
+
+function textoCanto(canto: string): string {
+  switch (canto) {
+    case "envido":
+      return "envido";
+    case "real-envido":
+      return "real envido";
+    default:
+      return "falta envido";
+  }
+}
+
+function textoRespuesta(clave: string): string {
+  return RESPUESTAS[clave] ?? clave;
+}
 
 const estado = {
   mano: [] as number[],
@@ -23,6 +51,15 @@ const estado = {
   puntosSuyos: 0,
   soyMano: true,
   modelo: 0,
+  /**
+   * Secuencia de cantos que hicieron hasta ahora.
+   *
+   * La UI es la dueña y se la pasa entera al motor en cada consulta. Si el
+   * motor guardara su propia copia, cambiar la mano o el marcador podría
+   * desincronizar lo que creemos que pasó de lo que realmente pasó en la mesa,
+   * y el consejo sería sobre una partida que no existe.
+   */
+  cantos: [] as string[],
   declarado: null as number | null,
   /** Si me toca guiar o responder. */
   respondiendo: false,
@@ -77,6 +114,7 @@ function render(): void {
     seccionMano(deck, listo),
     seccionObservaciones(),
     seccionConsejo(listo),
+    seccionRespuesta(listo),
     seccionJuego(listo, deck),
   );
 }
@@ -124,6 +162,7 @@ function seccionConfig(): HTMLElement {
   selMano.addEventListener("change", () => {
     estado.soyMano = selMano.checked;
     motor.setMano(estado.soyMano);
+    reaplicarObservaciones();
     render();
   });
   const etiquetaMano = el("label", "campo");
@@ -206,13 +245,60 @@ function seccionObservaciones(): HTMLElement {
   const caja = section("observaciones");
   caja.append(el("h2", "titulo-seccion", "Qué hizo el rival"));
 
+  // Los cantos, en orden. El motor valida que la secuencia sea legal y
+  // avisa si no lo es, así que acá alcanza con no dejar mandar el último.
+  if (estado.cantos.length > 0) {
+    const secuencia = el("div", "secuencia");
+    secuencia.append(el("span", "quien", "Cantó"));
+    secuencia.append(
+      el(
+        "strong",
+        "cantos",
+        estado.cantos.map(textoCanto).join(" → "),
+      ),
+    );
+    secuencia.append(
+      boton(
+        "deshacer",
+        () => {
+          estado.cantos.pop();
+          estado.declarado = null;
+          render();
+        },
+        "secundario chico",
+      ),
+    );
+    caja.append(secuencia);
+  }
+
+  const cantados = el("div", "fila-cantos");
+  for (const canto of CANTOS) {
+    cantados.append(
+      boton(
+        textoCanto(canto),
+        () => {
+          if (estado.cantos.includes(canto)) return; // la falta no se repite
+          estado.cantos.push(canto);
+          estado.declarado = null;
+          render();
+        },
+        "chico",
+      ),
+    );
+  }
+  if (estado.cantos.length === 0) {
+    cantados.append(el("p", "nota-belief", "Tocá un canto cuando el rival cante envido."));
+  }
+  caja.append(cantados);
+
   const declarada = document.createElement("select");
   declarada.className = "selector";
-  declarada.append(new Option("no declaró envido", ""));
+  declarada.append(new Option("no declaró tanto", ""));
   for (let valor = 20; valor <= 33; valor++) {
     declarada.append(new Option(`declaró ${valor}`, String(valor)));
   }
   declarada.value = estado.declarado === null ? "" : String(estado.declarado);
+  declarada.disabled = estado.cantos.length === 0;
   declarada.addEventListener("change", () => {
     const texto = declarada.value;
     if (texto === "") {
@@ -224,7 +310,9 @@ function seccionObservaciones(): HTMLElement {
     render();
   });
 
-  caja.append(el("label", "campo", "envido: "), declarada);
+  const campo = el("label", "campo");
+  campo.append(document.createTextNode("envido: "), declarada);
+  caja.append(campo);
 
   const info = motor.listo && estado.mano.length === 3 ? motor.snapshot : null;
   if (info) {
@@ -295,6 +383,71 @@ function seccionConsejo(listo: boolean): HTMLElement {
 
   const porque = el("ul", "razones");
   for (const razon of consejo.reasons) porque.append(el("li", "", razon));
+  caja.append(porque);
+
+  return caja;
+}
+
+// ---------------------------------------------------------------------------
+// Respuesta al canto
+// ---------------------------------------------------------------------------
+
+function seccionRespuesta(listo: boolean): HTMLElement {
+  const caja = section("respuesta");
+  caja.append(el("h2", "titulo-seccion", "Qué responder"));
+
+  if (!listo) {
+    caja.append(aviso("Primero armá tu mano.", "espera"));
+    return caja;
+  }
+  if (estado.cantos.length === 0) {
+    caja.append(aviso("Todavía no cantó nada. Arriba tocá el canto cuando lo haga.", "espera"));
+    return caja;
+  }
+  if (estado.declarado === null) {
+    caja.append(aviso("Anotá arriba cuánto declaró, así el consejo sabe qué responder.", "espera"));
+    return caja;
+  }
+
+  let consejo: ResponseAdvice;
+  const inicio = performance.now();
+  try {
+    consejo = motor.responseAdvice(estado.cantos, estado.declarado);
+  } catch (error) {
+    caja.append(aviso(`No se pudo calcular: ${(error as Error).message}`, "error"));
+    return caja;
+  }
+  const ms = performance.now() - inicio;
+
+  const principal = el("div", "recomendacion");
+  const etiquetaConfianza =
+    consejo.confidence === "firme" ? "firme" : consejo.confidence === "bluff" ? "de mentira" : "empate";
+  principal.append(
+    el("div", "accion-grande", textoRespuesta(consejo.recommended)),
+    el("div", "confianza", etiquetaConfianza),
+    el(
+      "div",
+      "declarar",
+      `ganás el envido el ${(consejo.p_win_if_wanted * 100).toFixed(0)} %`,
+    ),
+  );
+  caja.append(principal);
+
+  const lista = el("ul", "opciones");
+  for (const opcion of consejo.options) {
+    const item = el("li", `opcion${opcion.choice === consejo.recommended ? " elegida" : ""}`);
+    item.append(
+      el("span", "opcion-nombre", textoRespuesta(opcion.choice)),
+      el("span", "opcion-ev", `${opcion.ev >= 0 ? "+" : ""}${opcion.ev.toFixed(2)}`),
+      el("span", "opcion-detalle", `${opcion.points} puntos en juego`),
+    );
+    lista.append(item);
+  }
+  caja.append(lista);
+
+  const porque = el("ul", "razones");
+  for (const razon of consejo.reasons) porque.append(el("li", "", razon));
+  porque.append(el("li", "", `calculado en ${ms.toFixed(0)} ms`));
   caja.append(porque);
 
   return caja;
@@ -434,7 +587,19 @@ function alternarCarta(indice: number): void {
     return; // tres cartas y una más: se ignora, no se sacan las viejas
   }
   motor.setHand(estado.mano);
+  reaplicarObservaciones();
   render();
+}
+
+/**
+ * `setHand` y `setMano` reconstruyen la belief desde cero, así que se llevan
+ * por delante lo que ya sabíamos del rival. Hay que volver a cargarlo o la
+ * pantalla prometería un consejoCONDICIONADO y daría el del prior.
+ */
+function reaplicarObservaciones(): void {
+  if (estado.declarado !== null) {
+    motor.observeDeclared(estado.declarado);
+  }
 }
 
 function resumenMano(): string {
