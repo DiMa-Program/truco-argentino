@@ -78,11 +78,10 @@ interface TrucoWasm {
   setMano(iAmMano: boolean): void;
   observeDeclared(value: number): void;
   observePlayedCard(
-    card: number,
+    card: number | undefined,
     heLeads: boolean,
-    trick: number,
-    bazasMias: number,
-    bazasSuyas: number,
+    myWins: number,
+    theirWins: number,
   ): void;
   bestPlay(leadCard: number | undefined, myWins: number, theirWins: number): string;
   responseAdvice(seq: string, declared: number): string;
@@ -153,8 +152,20 @@ export class Engine {
     this.#requiere().observeDeclared(value);
   }
 
-  observePlayedCard(card: number, heLeads: boolean, trick: number, mias: number, suyas: number): void {
-    this.#requiere().observePlayedCard(card, heLeads, trick, mias, suyas);
+  /**
+   * Registra la carta de la baza en curso.
+   *
+   * `card` en `undefined` la borra. El motor RECONSTRUYE la belief con cada
+   * cambio, así que se puede cambiar de carta sin arrastrar la anterior: si
+   * no, la belief acabaría creyendo que el rival jugó todas las que probaste.
+   */
+  observePlayedCard(
+    card: number | undefined,
+    heLeads: boolean,
+    myWins: number,
+    theirWins: number,
+  ): void {
+    this.#requiere().observePlayedCard(card, heLeads, myWins, theirWins);
   }
 
   get snapshot(): Snapshot {

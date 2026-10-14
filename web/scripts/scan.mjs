@@ -206,16 +206,69 @@ console.log("\n5. observePlayedCard");
 {
   const m = motor();
   m.setHand(Uint8Array.from([6, 5, 22]));
-  for (const card of [0, 22, 39]) {
-    for (const trick of [0, 1, 2, 3, 255]) {
-      for (const bazas of [0, 1, 2, 3]) {
-        for (const guio of [true, false]) {
-          correr(`observePlayedCard(${card},${guio},${trick},${bazas})`, () =>
-            m.observePlayedCard(card, guio, trick, bazas, 0),
+  for (const card of [undefined, 0, 22, 39]) {
+    for (const guio of [true, false]) {
+      for (let mias = 0; mias <= 2; mias++) {
+        for (let suyas = 0; suyas <= 2; suyas++) {
+          correr(`observePlayedCard(${card},${guio},${mias},${suyas})`, () =>
+            m.observePlayedCard(card, guio, mias, suyas),
           );
         }
       }
     }
+  }
+  liberar(m);
+}
+
+// --- 5b. Ver la carta del rival tiene que ACHICAR la belief ----------------
+
+console.log("\n5b. Ver la carta del rival achica la belief");
+{
+  const m = motor();
+  m.setHand(Uint8Array.from([6, 5, 22]));
+  const prior = JSON.parse(m.snapshot()).belief_size;
+
+  m.observePlayedCard(3, true, 0, 0);
+  const conCarta = JSON.parse(m.snapshot()).belief_size;
+  if (!(conCarta < prior / 5)) {
+    console.log(`  [MAL] ver la carta apenas achica: ${prior} -> ${conCarta}`);
+    fallos++;
+  }
+
+  // Cambiar de carta tiene que REEMPLAZAR, no sumar. Si acumulara, probar
+  // varias salidas dejaría la belief creyendo que el rival jugó todas.
+  m.observePlayedCard(10, true, 0, 0);
+  const otra = JSON.parse(m.snapshot()).belief_size;
+  if (otra !== conCarta) {
+    console.log(`  [MAL] cambiar de carta acumula: ${conCarta} -> ${otra}`);
+    fallos++;
+  }
+
+  // Y borrar tiene que devolver al prior, no dejar el último registro.
+  m.observePlayedCard(undefined, false, 0, 0);
+  const borrada = JSON.parse(m.snapshot()).belief_size;
+  if (borrada !== prior) {
+    console.log(`  [MAL] borrar la carta no vuelve al prior: ${prior} -> ${borrada}`);
+    fallos++;
+  }
+
+  // Cambiar el ROL de mano es la misma mano, así que lo que ya sabíamos del
+  // rival tiene que sobrevivir: es la misma mesa.
+  m.observePlayedCard(3, true, 0, 0);
+  m.setMano(false);
+  if (JSON.parse(m.snapshot()).belief_size !== conCarta) {
+    console.log("  [MAL] cambiar el rol de mano pierde la carta que ya sabíamos");
+    fallos++;
+  }
+  m.setMano(true);
+
+  // Cambiar la MANO sí es otra mano: si te reparten cartas nuevas, el envido
+  // anterior y la baza anterior dejaron de existir. Arrastrarlos dejaba el
+  // consejo de la mano anterior.
+  m.setHand(Uint8Array.from([6, 5, 30]));
+  if (JSON.parse(m.snapshot()).belief_size !== prior) {
+    console.log("  [MAL] cambiar la mano arrastra observaciones de la mano anterior");
+    fallos++;
   }
   liberar(m);
 }

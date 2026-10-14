@@ -164,7 +164,19 @@ pub struct Truco {
     config: MatchConfig,
     score: Score,
     i_am_mano: bool,
-    declared: Option<u8>,
+    /// Tantos que declaró el rival, si declaró.
+    declarado: Option<u8>,
+    /// La carta de la baza en curso y si la guió él.
+    ///
+    /// Se guarda aparte de la `BeliefState` a propósito. Una `BeliefState` solo
+    /// acumula observaciones: no hay forma de deshacer una. Y la UI es
+    /// exploratoria — elegís una salida, te arrepentís, elegís otra— así que si
+    /// cada cambio se sumara, la belief terminaría sabiendo que el rival jugó
+    /// cinco cartas distintas. Guardando el hecho aparte y reconstruyendo, se
+    /// puede cambiar de idea sin arrastrar nada.
+    jugada: Option<(Card, bool)>,
+    /// Bazas ya ganadas por cada uno. De acá sale el índice de la baza.
+    bazas: (u8, u8),
 }
 
 #[wasm_bindgen]
@@ -182,7 +194,9 @@ impl Truco {
             config: MatchConfig::to_30(),
             score: Score { a: 0, b: 0 },
             i_am_mano: true,
-            declared: None,
+            declarado: None,
+            jugada: None,
+            bazas: (0, 0),
         }
     }
 
@@ -214,7 +228,14 @@ impl Truco {
             JsError::new("mano inválida: no puede tener la misma carta dos veces")
         })?;
         self.my_hand = Some(hand);
-        self.state = Some(BeliefState::new(hand, self.i_am_mano));
+        // Mano nueva es una situación nueva: si te reparten cartas, el envido
+        // anterior y la baza anterior dejaron de existir. Arrastrarlos hacía
+        // que cambiar de mano en la UI te dejara el consejo de la mano
+        // anterior.
+        self.declarado = None;
+        self.jugada = None;
+        self.bazas = (0, 0);
+        self.rebuild_belief();
         Ok(())
     }
 
@@ -236,54 +257,41 @@ impl Truco {
     #[wasm_bindgen(js_name = setMano)]
     pub fn set_mano(&mut self, i_am_mano: bool) {
         self.i_am_mano = i_am_mano;
-        if let Some(hand) = self.my_hand {
-            self.state = Some(BeliefState::new(hand, i_am_mano));
-        }
+        self.rebuild_belief();
     }
 
     /// Registra que el rival cantó envido y declaró `value`, que va de 20 a 33.
     #[wasm_bindgen(js_name = observeDeclared)]
     pub fn observe_declared(&mut self, value: u8) -> Result<(), JsError> {
-        let value = tanto_declarado(value)?;
-        self.declared = Some(value);
-        if let Some(state) = self.state.as_mut() {
-            state.observe(Observation::CalledEnvido(true));
-            state.observe(Observation::DeclaredEnvido(value));
-        }
+        self.declarado = Some(tanto_declarado(value)?);
+        self.rebuild_belief();
         Ok(())
     }
 
-    /// Registra que el rival jugó una carta en la baza `trick`.
+    /// Registra la carta de la baza en curso.
     ///
-    /// `card` es un índice 0..40 y `he_leads` dice si él la guiar. Es la
-    /// observación que más concentra: ver a alguien renunciar a ganar una baza
-    /// dice mucho más que verlo ganar.
+    /// `card` es `null` si todavía no salió ninguna: eso borra el registro. `he_leads`
+    /// dice si la guiará el rival, y `my_wins`/`their_wins` cuántas bazas lleva cada
+    /// uno, de ahí sale en qué baza estamos.
+    ///
+    /// Esto es lo que más concentra la belief de una baza: un rival que
+    /// renuncia a ganar una baza dice mucho más que uno que la gana. Sin
+    /// registrarlo, el consejo de "qué responder" se toma con menos
+    /// información de la que tiene sobre la mesa.
     #[wasm_bindgen(js_name = observePlayedCard)]
     pub fn observe_played_card(
         &mut self,
-        card: u8,
+        card: Option<u8>,
         he_leads: bool,
-        trick: u8,
-        bazas_mias: u8,
-        bazas_suyas: u8,
+        my_wins: u8,
+        their_wins: u8,
     ) -> Result<(), JsError> {
-        let state = self.state.as_mut().ok_or_else(|| JsError::new("primero hay que setHand"))?;
-        let card = carta(card)?;
-        let (mias, suyas) = avance(bazas_mias, bazas_suyas)?;
-        if (trick as usize) > mias + suyas {
-            return Err(JsError::new(&format!(
-                "la baza {trick} todavía no se jugó: van {mias}+{suyas}"
-            )));
+        let (mias, suyas) = avance(my_wins, their_wins)?;
+        self.bazas = (mias as u8, suyas as u8);
+        self.jugada = card.map(carta).transpose()?.map(|c| (c, he_leads));
+        if self.my_hand.is_some() {
+            self.rebuild_belief();
         }
-        state.observe(Observation::PlayedCard {
-            card,
-            ctx: PlayContext {
-                table: [None, None],
-                he_leads,
-                trick: trick as usize,
-                bazas: [mias, suyas],
-            },
-        });
         Ok(())
     }
 
@@ -455,6 +463,37 @@ impl Truco {
         }
     }
 
+    /// Reconstruye la belief desde cero con lo que se sabe de verdad.
+    ///
+    /// Es lo que permite que la UI cambie de opinión: elegís una salida, te
+    /// arrepentís, elegís otra. Sin esto la `BeliefState` acumularía las dos y
+    /// creería que el rival joueó las dos cartas, que es peor que no saber
+    /// nada.
+    fn rebuild_belief(&mut self) {
+        let Some(hand) = self.my_hand else {
+            self.state = None;
+            return;
+        };
+        let mut state = BeliefState::new(hand, self.i_am_mano);
+        if let Some(valor) = self.declarado {
+            state.observe(Observation::CalledEnvido(true));
+            state.observe(Observation::DeclaredEnvido(valor));
+        }
+        if let Some((card, guio)) = self.jugada {
+            let (mias, suyas) = (self.bazas.0 as usize, self.bazas.1 as usize);
+            state.observe(Observation::PlayedCard {
+                card,
+                ctx: PlayContext {
+                    table: [None, None],
+                    he_leads: guio,
+                    trick: mias + suyas,
+                    bazas: [mias, suyas],
+                },
+            });
+        }
+        self.state = Some(state);
+    }
+
     fn snapshot_inner(&self) -> Result<Snapshot, JsError> {
         let (hand, state) = self.hand_and_state()?;
         let belief = state.compute(&self.model);
@@ -474,7 +513,7 @@ impl Truco {
             opponent_model: self.model.name.to_string(),
             belief_size: belief.n(),
             concentration: belief.concentration(),
-            declared: self.declared,
+            declared: self.declarado,
         })
     }
 }

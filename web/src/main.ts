@@ -162,7 +162,7 @@ function seccionConfig(): HTMLElement {
   selMano.addEventListener("change", () => {
     estado.soyMano = selMano.checked;
     motor.setMano(estado.soyMano);
-    reaplicarObservaciones();
+    avisarCartaJugada();
     render();
   });
   const etiquetaMano = el("label", "campo");
@@ -482,7 +482,18 @@ function seccionJuego(listo: boolean, deck: CardInfo[]): HTMLElement {
   const salida = estado.respondiendo ? estado.cartaRival : undefined;
   if (salida !== undefined) {
     const carta = deck[salida];
-    if (carta) caja.append(el("p", "nota-belief", `El rival guiaría con ${carta.name}.`));
+    if (carta) {
+      const info = motor.listo && estado.mano.length === 3 ? motor.snapshot : null;
+      caja.append(
+        el(
+          "p",
+          "nota-belief",
+          info
+            ? `El rival guiaría con ${carta.name}. Eso deja ${info.belief_size} manos posibles.`
+            : `El rival guiaría con ${carta.name}.`,
+        ),
+      );
+    }
   }
 
   let consejo: PlayAdvice;
@@ -531,18 +542,20 @@ function seccionJuego(listo: boolean, deck: CardInfo[]): HTMLElement {
 }
 
 /** ¿Me toca guiar o responder, y con qué carta guió el rival si responde. */
-function selectorTurno(deck: CardInfo[]): HTMLElement {
+const selectorTurno = (deck: CardInfo[]): HTMLElement => {
   const fila = el("div", "fila-turno");
 
   const guiar = boton("Me toca guiar", () => {
     estado.respondiendo = false;
     estado.cartaRival = undefined;
+    avisarCartaJugada();
     render();
   }, "chico" + (estado.respondiendo ? "" : " activo"));
 
   const responder = boton("Respondo", () => {
     estado.respondiendo = true;
     if (estado.cartaRival === undefined) estado.cartaRival = deck[0]?.index;
+    avisarCartaJugada();
     render();
   }, "chico" + (estado.respondiendo ? " activo" : ""));
 
@@ -566,6 +579,7 @@ function selectorTurno(deck: CardInfo[]): HTMLElement {
     }
     selector.addEventListener("change", () => {
       estado.cartaRival = Number(selector.value);
+      avisarCartaJugada();
       render();
     });
     fila.append(selector);
@@ -588,6 +602,7 @@ function filaMarcadorBazas(): HTMLElement {
       if (estado.bazasMias + nuevo > 2) return;
       estado.bazasSuyas = nuevo;
     }
+    avisarCartaJugada();
     render();
   };
 
@@ -622,7 +637,7 @@ function alternarCarta(indice: number): void {
   // rompía la app entera. El smoke no lo veía porque siempre llama con tres.
   if (estado.mano.length === 3) {
     motor.setHand(estado.mano);
-    reaplicarObservaciones();
+    avisarCartaJugada();
   }
   render();
 }
@@ -632,14 +647,30 @@ function alternarCarta(indice: number): void {
  * por delante lo que ya sabíamos del rival. Hay que volver a cargarlo o la
  * pantalla prometería un consejoCONDICIONADO y daría el del prior.
  */
-function reaplicarObservaciones(): void {
-  if (estado.declarado === null) return;
+/**
+ * Le dice al motor qué carta salió en la baza en curso.
+ *
+ * Esto no es cosmético: ver qué juega el rival es lo que más concentra la
+ * belief. Si él tira el 7 de espada, la belief descarta de entrada todas las
+ * manos que no lo tenían, y si lo tira perdiéndose, además dice que está
+ * flojo. Sin esto el consejo de "qué responder" se tomaba a ciegas.
+ *
+ * Se llama en cada cambio de la salida o del marcador de bazas. El motor
+ * reconstruye la belief desde cero con lo que sabe, así que cambiar de mano,
+ * cambiar el rol o cambiar la carta no arrastra lo anterior.
+ */
+function avisarCartaJugada(): void {
+  if (!motor.listo || estado.mano.length !== 3) return;
   try {
-    motor.observeDeclared(estado.declarado);
+    motor.observePlayedCard(
+      estado.respondiendo ? estado.cartaRival : undefined,
+      estado.respondiendo,
+      estado.bazasMias,
+      estado.bazasSuyas,
+    );
   } catch {
-    // Si el motor no acepta el tanto, la observación queda sin registrar. Es
-    // preferible a reventar: el resto de la app sigue funcionando.
-    estado.declarado = null;
+    // Una combinación imposible no vale la pena romper la pantalla por eso:
+    // la siguiente acción válida vuelve a sincronizar.
   }
 }
 
