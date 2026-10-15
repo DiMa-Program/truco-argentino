@@ -2,37 +2,69 @@
 
 Motor de truco argentino + advisor GTO. **1v1, PWA offline.**
 
-Última actualización: Fases 0 a 3 completas y verificadas. Pendientes: 3b (tabla
-de policy del envido) y 4 (PWA advisor).
+Última actualización: Fases 0 a 4 completas y verificadas, más una auditoría de
+robustez que cerró los caminos donde la app se rompía.
 
 ## Cómo trabajar acá
 
 ```bash
-cargo test --release                  # 234 tests, ~80 s
+cargo test --release                  # 245 tests, ~80 s
 cargo clippy --all-targets --release # tiene que salir limpio
+cargo clippy --release --target wasm32-unknown-unknown -p truco-core -- -D warnings
 node scripts/check-encoding.mjs       # avisa si se cuelan caracteres raros
 cargo run --release -p gen-tables    # regenera los dos binarios (~40 s)
 cargo run --release -p gen-tables -- --skip-policy   # solo las tablas de probabilidad
 
 cd web
 npm install
-npm run verify                       # build + prueba de humo del wasm
+npm run verify                       # build + humo + scanner
 npm run dev                          # desarrollo
 ```
 
 Los tests de tablas son lentos en debug. **Siempre `--release`.**
 
+### Los dos clippy son obligatorios
+
+`wasm.rs` está detrás de un `cfg`, así que `cargo clippy --all-targets` **no lo
+revisa**. Sin el target `wasm32-unknown-unknown` pasan cosas que en el build de
+la web no compilan.
+
+### `git diff -w --stat` antes de cada commit
+
+El repo tiene finales de línea **mixtos por diseño histórico**: `belief.rs` y
+`opponent.rs` están en CRLF; `advisor.rs`, `wasm.rs` y todo `web/` están en LF.
+Editar con herramientas de Windows mete CRLF en archivos que eran LF, y el diff
+se infla de 107 líneas reales a más de 1.200 sin cambiar una sola palabra del
+código. `git diff -w` lo delata en un segundo.
+
 ### Estado verificado
 
-Todo lo de arriba se ejecutó y pasó, no según el reporte de la sesión anterior:
+Todo lo de abajo se ejecutó y pasó, no según el reporte de la sesión anterior:
 
 | Chequeo | Resultado |
 |---|---|
-| `cargo test --release` | 234 / 234 verdes, 0 fallados, 80 s |
+| `cargo test --release` | **245 / 245** verdes |
 | `cargo clippy --all-targets --release` | 0 warnings |
-| `node scripts/check-encoding.mjs` | 27 archivos, 9.654 líneas, limpio |
-| `cargo run --release -p gen-tables` | 8/8 invariantes de probabilidad + 6/6 de policy |
-| `npm run verify` (en `web/`) | build limpio + **29/29** de la prueba de humo del wasm |
+| `cargo clippy --target wasm32-unknown-unknown -p truco-core` | 0 warnings |
+| `node scripts/check-encoding.mjs` | limpio |
+| `cargo run --release -p gen-tables` | invariantes de probabilidad y de policy |
+| `npm run smoke` (en `web/`) | **39 / 39** de la prueba de humo |
+| `npm run scan` (en `web/`) | **291 / 0** del scanner de robustez |
+
+### `smoke` y `scan` no son lo mismo
+
+`smoke` prueba el **motor** con entradas siempre válidas: `setHand` con tres
+cartas listas, bazas que suman menos de 2. Por eso daba 39/39 con la app rota
+de punta a punta.
+
+`scan` recorre **todo lo que la UI puede producir, incluido lo imposible**, y
+clasifica cada respuesta: anda, error limpio o **panic**. Un panic de Rust se
+delata por el mensaje (`unreachable`, `index out of bounds`, `attempted to take
+ownership of Rust value`, `recursive use of an object`) y ninguno puede
+aparecer.
+
+Cuando un diff se vea desproporcionado, sospechá de los finales de línea
+**antes** de leer el contenido: el ruido esconde los cambios reales.
 
 Los dos generadores son **deterministas**, así que `.gitignore` los excluye sin
 riesgo: no hay información que se pierda, se reconstruye exacta.

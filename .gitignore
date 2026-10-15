@@ -25,3 +25,7 @@ STATE.pdf
 .DS_Store
 Thumbs.db
 *.log
+# Cache del registro de skills del agente: es autogenerado y tiene rutas
+# locales de esta maquina, asi que en otra PC no sirve. El registro real
+# (skill-registry.md) se regenera con gentle-ai skill-registry refresh --force.
+.atl/
