@@ -1,0 +1,24 @@
+# Lo que Vercel sube es el `dist/` YA COMPILADO, no el fuente.
+#
+# Por qué: el build completo necesita `cargo` (para compilar el core a wasm32,
+# `wasm-bindgen` y las dos tablas precomputadas). El build de Vercel no tiene
+# Rust, y las tablas son deterministas pero tardan ~40 s en generarse.
+#
+# Entonces el flujo es: se compila en la maquina (`npm run verify`) y se sube el
+# `dist/` resultante. Los dos `.bin` que se suben son los mismos que el motor
+# genera siempre: sha256 8c0b0675... y 904ffe9a... Si eso cambia, es que toco
+# una regla del truco, y hay que mirar eso antes que el deploy.
+#
+# Sin este archivo, el `.gitignore` del repo saca `dist/` del deploy y Vercel se
+# queda sin nada que servir. Pasa porque el deploy es desde una carpeta que está
+# dentro de un repo git, y Vercel lee el `.gitignore` de la raíz.
+
+node_modules
+src
+scripts
+public/wasm
+public/tables
+vite.config.ts
+tsconfig.json
+package.json
+package-lock.json
