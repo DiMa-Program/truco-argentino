@@ -21,11 +21,15 @@
 //!   y en 1v1 no se conoce la del rival; usar una de relleno haría que la
 //!   resolución del envido saliera falsa. Por eso acá se lleva el estado del
 //!   envido en la [`BeliefState`] y no en un `HandState`.
-//! - Flor y truco, más allá del aviso de que la flor es obligatoria.
+//! - La contraflor y la contraflor al resto. La flor base y el envite sí están:
+//!   viven en [`crate::canto`], que sí es testeable en nativo.
 
 use crate::advisor::{Advisor, Baza as TrickStateBaza, Confidence, EnvidoMove, ResponseMove, TrickState};
 use crate::belief::{BeliefState, Observation};
 use crate::bets::{EnvidoCall, EnvidoSeq};
+use crate::canto::{
+    EnvitoFlor, FlorState, Lado, RespuestaTruco, TrucoFase, TrucoState,
+};
 use crate::cards::Card;
 use crate::envido_policy::EnvidoPolicy;
 use crate::hand::Hand3;
@@ -55,11 +59,61 @@ struct Snapshot {
     concentration: f64,
     /// Tantos declarados por el rival, si declaró.
     declared: Option<u8>,
+    /// Flor y truco, que la pantalla los pinta aparte.
+    cantos: CantosJson,
+}
+
+/// El canto de flor y la escalera del truco, como los necesita la UI.
+#[derive(serde::Serialize)]
+struct CantosJson {
+    /// `true` si la pantalla muestra el canto de flor. Lo decide el usuario.
+    flor_enabled: bool,
+    /// `true` si tengo flor pendiente de cantar, que es obligada.
+    flor_pendiente: bool,
+    /// El valor de mi flor: 20 más las tres cartas, con las figuras en cero.
+    mi_flor: Option<u8>,
+    /// `"sin-cantar"`, `"envite"` o `"resuelta"`.
+    flor_fase: String,
+    /// Quién se lleva los puntos de la flor: `"yo"`, `"rival"` o `null`.
+    flor_ganador: Option<String>,
+    flor_puntos: Option<u32>,
+    /// Frase lista para mostrar, para que el HTML no tenga que armar el texto.
+    flor_resumen: String,
+
+    /// `"sin-cantar"`, `"esperando"`, `"aceptado"` o `"rechazado"`.
+    truco_fase: String,
+    /// `"truco"`, `"retruco"`, `"vale cuatro"` o `""`.
+    truco_nivel: String,
+    /// Si me toca cantar truco de cero.
+    truco_puede_cantar: bool,
+    /// Si me toca subir un escalón.
+    truco_puede_subir: bool,
+    /// Si el rival cantó y me toca responder.
+    truco_esperando: bool,
+    /// Si canté yo y la pelota está del otro lado.
+    truco_en_el_aire: bool,
+    /// Si el canto está querido y se está jugando.
+    truco_aceptado: bool,
+    /// Cuántos puntos vale la mano si se quiere.
+    truco_puntos_en_juego: u32,
+    /// Puntos que se lleva el que cantó si el otro no quiere, ya resuelto.
+    truco_puntos_no_quiero: u32,
+    /// Puntos que se llevaría el que cantó si el otro no quisiera ahora.
+    truco_si_no_quiero: u32,
+    /// `true` si la mano terminó con un "no quiero" del truco.
+    truco_cerrada: bool,
+    truco_resumen: String,
 }
 
 #[derive(serde::Serialize)]
 struct AdviceJson {
-    /// `"callarse"`, `"envido"`, `"real-envido"` o `"falta-envido"`.
+    /// `"callarse"`, `"envido"`, `"real envido"` o `"falta envido"`.
+    ///
+    /// Con ESPACIO, no con guion: sale de [`EnvidoMove::label`], que es el texto
+    /// que el advisor ya usa en las razones. Antes este doc decia
+    /// `"real-envido"` y `"falta-envido"`, que es lo que devuelve
+    /// `response_move_label` pero NO esta funcion: dos nombres distintos para el
+    /// mismo canto, y el doc insistia en el equivocado.
     recommended: String,
     /// Tantos a declarar con el canto.
     declared: u8,
@@ -68,6 +122,12 @@ struct AdviceJson {
     my_value: u8,
     p_win_envido: f64,
     points_at_stake: u32,
+    /// Con qué probabilidad real la recomendación deja al jugador **sin la
+    /// partida**. Cero para todo canto que no la cierre.
+    ///
+    /// Viaja aparte del EV a propósito: el EV son puntos, y un EV de +3 no dice si
+    /// eso es buena idea. Esto sí.
+    risk_match: f64,
     options: Vec<OptionJson>,
     reasons: Vec<String>,
 }
@@ -81,6 +141,8 @@ struct OptionJson {
     points: u32,
     is_bluff: bool,
     declared: u8,
+    /// Probabilidad de que esta jugada en particular pierda el partido entero.
+    risk_match: f64,
 }
 
 /// La respuesta a un canto: quiero, no quiero o subir.
@@ -94,6 +156,9 @@ struct ResponseJson {
     p_win_if_wanted: f64,
     /// Tantos que declaró el rival.
     declared: u8,
+    /// Con qué probabilidad real la respuesta recomendada deja al jugador sin la
+    /// partida. Cero si no puede perderla.
+    risk_match: f64,
     options: Vec<ResponseOptionJson>,
     reasons: Vec<String>,
 }
@@ -104,6 +169,8 @@ struct ResponseOptionJson {
     ev: f64,
     points: u32,
     equilibrium_mass: f64,
+    /// Probabilidad de que esta respuesta en particular pierda el partido.
+    risk_match: f64,
 }
 
 /// Convierte un índice de la UI en una carta, **validando el rango**.
@@ -135,22 +202,18 @@ fn tanto_declarado(valor: u8) -> Result<u8, JsError> {
     Ok(valor)
 }
 
-/// Valida el avance de las bazas.
+/// Valida el valor de una flor: de 20 a 38.
 ///
-/// Hay tres bazas por mano y la mano se cierra en la segunda, así que la
-/// suma nunca puede pasar de 2. `trickplay` indexa con la suma y antes se
-/// colgaba con 1-2, 2-1 y 2-2: tres formas de romper la app con dos toques.
-fn avance(mias: u8, suyas: u8) -> Result<(usize, usize), JsError> {
-    let (m, s) = (mias as usize, suyas as usize);
-    if m > 2 || s > 2 {
-        return Err(JsError::new("cada uno puede tener 0, 1 o 2 bazas ganadas"));
-    }
-    if m + s > 2 {
+/// Es 20 más las tres cartas, con las figuras en cero, así que el piso es 20 y el
+/// techo es 38. Sin esto, un 0 o un 255 de la UI llegaría hasta el envite y
+/// decidirse quién gana una comparación que no existe.
+fn valor_flor(valor: u8) -> Result<u8, JsError> {
+    if !(20..=38).contains(&valor) {
         return Err(JsError::new(&format!(
-            "imposible: {m}+{s} bazas. Solo hay tres bazas por mano y termina en la segunda"
+            "una flor va de 20 a 38 (20 más las tres cartas, figuras en cero), no {valor}"
         )));
     }
-    Ok((m, s))
+    Ok(valor)
 }
 
 /// El motor que corre dentro del navegador.
@@ -177,8 +240,11 @@ pub struct Truco {
     jugada: Option<(Card, bool)>,
     /// Bazas ya cerradas: qué jugamos cada uno y quién las ganó.
     trucos: TrickState,
-    /// Bazas ya ganadas por cada uno. De acá sale el índice de la baza.
-    bazas: (u8, u8),
+    /// El canto de flor de la mano. Va aparte de la belief porque es una
+    /// decisión de la mesa, no una observación sobre el rival.
+    flor: FlorState,
+    /// La escalera del truco de la mano.
+    canto_truco: TrucoState,
 }
 
 #[wasm_bindgen]
@@ -199,7 +265,8 @@ impl Truco {
             declarado: None,
             jugada: None,
             trucos: TrickState::new(),
-            bazas: (0, 0),
+            flor: FlorState::nueva(false),
+            canto_truco: TrucoState::nueva(),
         }
     }
 
@@ -237,7 +304,8 @@ impl Truco {
         // anterior.
         self.declarado = None;
         self.jugada = None;
-        self.bazas = (0, 0);
+        self.flor = FlorState::nueva(self.flor.enabled);
+        self.canto_truco = TrucoState::nueva();
         self.rebuild_belief();
         Ok(())
     }
@@ -349,6 +417,45 @@ pub fn undo_trick(&mut self) {
             Advisor { policy, model: self.model, config: self.config, score: self.score, i_am_mano: self.i_am_mano };
         let advice = advisor.envido_opening(hand, &belief);
 
+        // El riesgo de perder la partida y la flor pendiente van los dos arriba,
+        // y el ORDEN importa.
+        //
+        // La flor va primera porque si la tenés y no la cantás el envido no
+        // corre: avisar del riesgo de un canto que todavía no existe sería
+        // mentir. El riesgo va segundo, delante de las razones del advisor.
+        let riesgo = advice
+            .options
+            .iter()
+            .find(|o| o.choice == advice.recommended)
+            .map(|o| advisor.riesgo_de_partido(o))
+            .unwrap_or(0.0);
+        let mut reasons = advice.reasons;
+        if riesgo > 0.0 {
+            reasons.insert(
+                0,
+                format!(
+                    "Ojo: esta jugada te deja sin la partida el {:.0} % de las veces. El EV de \
+                     arriba son puntos esperados, no la chance de que te quedes con algo.",
+                    riesgo * 100.0
+                ),
+            );
+        }
+        // Y por ultimo la flor pendiente.
+        //
+        // Va al final a proposito, y no por desorden: es una CORRECCION sobre la
+        // recommendation que ya dio el advisor. Si fuera al principio (con
+        // `insert(0, ...)`) pisaria la primera razon del EV, que es la que mas
+        // sirve para decidir. Y no puede ir antes del riesgo por otra razon mas
+        // fuerte: si tenes flor, el envido todavia no corrio, asi que no hay
+        // todavia ninguna apuesta de la que avisar que te deja sin partido.
+        if self.flor.anula_envido(&hand) {
+            reasons.push(format!(
+                "Tenés flor de {} y es obligada: cantala antes de cantar envido, porque la \
+                 flor lo anula.",
+                hand.flor()
+            ));
+        }
+
         let json = AdviceJson {
             recommended: move_label(advice.recommended).to_string(),
             declared: advice.declared,
@@ -356,10 +463,12 @@ pub fn undo_trick(&mut self) {
             my_value: advice.my_value,
             p_win_envido: advice.p_win_envido,
             points_at_stake: advice.points_at_stake,
+            risk_match: riesgo,
             options: advice
                 .options
                 .iter()
                 .map(|o| OptionJson {
+                    risk_match: advisor.riesgo_de_partido(o),
                     choice: move_label(o.choice).to_string(),
                     ev: o.ev,
                     p_they_want: o.p_they_want,
@@ -369,7 +478,7 @@ pub fn undo_trick(&mut self) {
                     declared: o.declared,
                 })
                 .collect(),
-            reasons: advice.reasons,
+            reasons,
         };
         serde_json::to_string(&json).map_err(js)
     }
@@ -431,15 +540,38 @@ pub fn undo_trick(&mut self) {
             Advisor { policy, model: self.model, config: self.config, score: self.score, i_am_mano: self.i_am_mano };
         let advice = advisor.envido_response(seq, declared, hand, &belief);
 
+        // El riesgo de perder la partida viaja con cada opción, para que la
+        // pantalla pueda marcar en rojo la que deja sin nada y no solo la
+        // recomendada.
+        let p_win_respuesta = advisor.p_win_declared(hand, &belief);
+        let riesgo_de = |o: &crate::advisor::ResponseOption| {
+            let (subida, afirmo) = match o.choice {
+                crate::advisor::ResponseMove::Subir(call) => {
+                    let afirmo = if call == EnvidoCall::FaltaEnvido { 28 } else { 31 };
+                    (seq.can_elevate(call).then(|| seq.elevate(call)), afirmo)
+                }
+                _ => (None, 0),
+            };
+            advisor.riesgo_de_partido_al_responder(
+                seq,
+                p_win_respuesta,
+                if afirmo > 0 { advisor.p_they_take_my_raise(afirmo, &belief) } else { 0.0 },
+                &o.choice,
+                subida,
+            )
+        };
+
         let json = ResponseJson {
             recommended: response_move_label(advice.recommended).to_string(),
             confidence: confidence_label(advice.confidence).to_string(),
             p_win_if_wanted: advice.p_win_if_wanted,
             declared,
+            risk_match: advice.risk_match,
             options: advice
                 .options
                 .iter()
                 .map(|o| ResponseOptionJson {
+                    risk_match: riesgo_de(o),
                     choice: response_move_label(o.choice).to_string(),
                     ev: o.ev,
                     points: o.points,
@@ -457,6 +589,105 @@ pub fn undo_trick(&mut self) {
         let cartas: Vec<CardJson> =
             (0..40u8).map(|i| CardJson { index: i, name: Card::from_index(i).to_string() }).collect();
         serde_json::to_string(&cartas).map_err(js)
+    }
+
+    /// Prende o apaga el canto de flor.
+    ///
+    /// Apagado, la pantalla no muestra nada de flor y el estado arranca limpio.
+    /// El valor se conserva entre manos: si jugás con flor, se juega con flor en
+    /// todas.
+    #[wasm_bindgen(js_name = setFlor)]
+    pub fn set_flor(&mut self, enabled: bool) {
+        self.flor = FlorState::nueva(enabled);
+    }
+
+    /// Registra que alguien cantó flor.
+    ///
+    /// `i_called` dice cuál de los dos la cantó: la pantalla es la que sabe si
+    /// la cantaste vos o la cantó el rival, y el motor no tiene forma de averi-
+    /// guarlo. `rival_has_flor` es si el rival tiene flor, que sale de
+    /// `p_opponent_flor` de la belief.
+    ///
+    /// De eso sale si hay envite: si cantaste vos, hay envite cuando el rival
+    /// también tiene; si cantó él, hay envite cuando vos tenés flor, que el
+    /// motor ya sabe mirando tu mano.
+    #[wasm_bindgen(js_name = callFlor)]
+    pub fn call_flor(&mut self, i_called: bool, rival_has_flor: bool) -> Result<(), JsError> {
+        let Some(hand) = self.my_hand else {
+            return Err(JsError::new("primero hay que setHand"));
+        };
+        let tengo_flor = hand.has_flor();
+        if i_called && !tengo_flor {
+            return Err(JsError::new("no tenés flor para cantar"));
+        }
+        let hay_envite = if i_called { rival_has_flor } else { tengo_flor };
+        let lado = if i_called { Lado::Yo } else { Lado::Rival };
+        self.flor.cantar(lado, hay_envite).map_err(js)
+    }
+
+    /// Responde un envite de flores.
+    ///
+    /// Solo tiene sentido si la flor la cantó el rival: si la cantaste vos, el que
+    /// contesta el envite es él. `my_flor` y `their_flor` son los valores de cada
+    /// una (20 más las cartas, figuras en cero) y solo se comparan con el "con flor
+    /// quiero".
+    #[wasm_bindgen(js_name = answerFlor)]
+    pub fn answer_flor(&mut self, choice: &str, my_flor: u8, their_flor: u8) -> Result<(), JsError> {
+        if self.my_hand.is_none() {
+            return Err(JsError::new("primero hay que setHand"));
+        }
+        if self.flor.cantante == Some(Lado::Yo) {
+            return Err(JsError::new("cantaste vos la flor: el que contesta el envite es el rival"));
+        }
+        let choice = match choice {
+            "con-flor-quiero" => EnvitoFlor::Quiero,
+            "flor-me-achico" => EnvitoFlor::Achico,
+            otro => return Err(JsError::new(&format!("respuesta de flor desconocida: {otro}"))),
+        };
+        let my_flor = valor_flor(my_flor)?;
+        let their_flor = valor_flor(their_flor)?;
+        self.flor
+            .responder_envite(choice, Lado::Yo, my_flor, their_flor, self.i_am_mano)
+            .map_err(js)
+    }
+
+    /// Canta truco, retruco o vale cuatro, según dónde esté la escalera.
+    ///
+    /// `i_called` dice si cantaste vos o el rival: la pantalla sabe eso y el
+    /// motor no. Sin esto, la escalera se llenaba de cantos propios que nadie
+    /// puede responder, que es un estado muerto.
+    #[wasm_bindgen(js_name = callTruco)]
+    pub fn call_truco(&mut self, i_called: bool) -> Result<(), JsError> {
+        self.mano_para_el_canto()?;
+        let lado = if i_called { Lado::Yo } else { Lado::Rival };
+        self.canto_truco.cantar(lado).map_err(js)
+    }
+
+    /// Responde un canto de truco. `choice` va `"quiero"`, `"no-quiero"` o `"subir"`.
+    ///
+    /// `i_answer` dice quién contesta. Hace falta por los dos lados: vos tenés
+    /// que poder anotar lo que te dijo el rival, y también lo que le dijiste vos.
+    /// Sin el lado del que responde, la escalera se trunca en el primer canto:
+    /// nadie podía pasar de "canté truco" a "el rival me dijo que sí".
+    #[wasm_bindgen(js_name = answerTruco)]
+    pub fn answer_truco(&mut self, choice: &str, i_answer: bool) -> Result<(), JsError> {
+        self.mano_para_el_canto()?;
+        let lado = if i_answer { Lado::Yo } else { Lado::Rival };
+        let choice = match choice {
+            "quiero" => RespuestaTruco::Quiero,
+            "no-quiero" => RespuestaTruco::NoQuiero,
+            "subir" => RespuestaTruco::Subir,
+            otro => return Err(JsError::new(&format!("respuesta de truco desconocida: {otro}"))),
+        };
+        self.canto_truco.responder(choice, lado).map_err(js)
+    }
+
+    /// Que haya mano antes de cantar cualquier cosa.
+    fn mano_para_el_canto(&self) -> Result<(), JsError> {
+        if self.my_hand.is_none() {
+            return Err(JsError::new("primero hay que setHand"));
+        }
+        Ok(())
     }
 }
 
@@ -567,7 +798,55 @@ impl Truco {
             belief_size: belief.n(),
             concentration: belief.concentration(),
             declared: self.declarado,
+            cantos: self.cantos_json(hand),
         })
+    }
+
+    /// Traduce el estado de los cantos a la forma que la UI los pinta.
+    fn cantos_json(&self, hand: Hand3) -> CantosJson {
+        let flor = self.flor;
+        let truco = self.canto_truco;
+        CantosJson {
+            flor_enabled: flor.enabled,
+            flor_pendiente: flor.debe_cantar(&hand),
+            mi_flor: flor.mi_flor(&hand),
+            flor_fase: match flor.fase {
+                crate::canto::FlorFase::SinCantar => "sin-cantar",
+                crate::canto::FlorFase::Envite => "envite",
+                crate::canto::FlorFase::Resuelta => "resuelta",
+            }
+            .to_string(),
+            flor_ganador: flor.puntos.map(|p| lado_label(p.lado).to_string()),
+            flor_puntos: flor.puntos.map(|p| p.cantados),
+            flor_resumen: flor.resumen(&hand),
+
+            truco_fase: match truco.fase {
+                TrucoFase::SinCantar => "sin-cantar",
+                TrucoFase::Esperando => "esperando",
+                TrucoFase::Aceptado => "aceptado",
+                TrucoFase::Rechazado => "rechazado",
+            }
+            .to_string(),
+            truco_nivel: truco.nivel_truco().name().to_string(),
+            truco_puede_cantar: truco.puede_cantar(),
+            truco_puede_subir: truco.puede_subir(Lado::Yo),
+            truco_esperando: truco.fase == TrucoFase::Esperando && truco.cantante == Some(Lado::Rival),
+            truco_en_el_aire: truco.fase == TrucoFase::Esperando && truco.cantante == Some(Lado::Yo),
+            truco_aceptado: truco.fase == TrucoFase::Aceptado,
+            truco_puntos_en_juego: truco.puntos_si_se_quiere(),
+            truco_puntos_no_quiero: truco.puntos_del_no_quiero,
+            truco_si_no_quiero: truco.puntos_si_no_se_quiere(),
+            truco_cerrada: truco.cerrada,
+            truco_resumen: truco.resumen(),
+        }
+    }
+}
+
+/// El nombre corto de un lado, como lo usa la UI.
+fn lado_label(lado: Lado) -> &'static str {
+    match lado {
+        Lado::Yo => "yo",
+        Lado::Rival => "rival",
     }
 }
 

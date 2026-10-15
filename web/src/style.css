@@ -370,6 +370,15 @@ section {
   border-left-color: var(--dorado);
 }
 
+.aviso.riesgo {
+  border-left-color: var(--rojo);
+  font-weight: 600;
+}
+
+.opcion.arriesgada .opcion-nombre {
+  color: var(--rojo);
+}
+
 .aviso.error {
   border-left-color: var(--rojo);
   color: var(--rojo);
@@ -410,6 +419,33 @@ section {
 
 .fila-puntos.bazas .puntos {
   font-size: 1.05rem;
+}
+
+/* Flor y truco ---------------------------------------------------------- */
+
+.subtitulo {
+  margin: 0.9rem 0 0.4rem;
+  font-size: 0.85rem;
+  text-transform: lowercase;
+  color: var(--tenue);
+}
+
+.fila-botones {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.6rem;
+  align-items: center;
+}
+
+.campo-flor {
+  width: 4.5rem;
+  padding: 0.35rem 0.4rem;
+  border: 1px solid var(--borde);
+  border-radius: 0.4rem;
+  background: var(--fondo);
+  color: var(--texto);
+  font-size: 0.9rem;
 }
 
 @media (min-width: 30rem) {

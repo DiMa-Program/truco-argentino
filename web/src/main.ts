@@ -74,6 +74,22 @@ const estado = {
    * todas las cosas, así que no hay forma de mentirse.
    */
   bazas: [] as { mia: number; suya: number; gane: boolean }[],
+  /**
+   * Si se juega con flor.
+   *
+   * Apagado, la pantalla no muestra nada de flor y todo sigue como antes. Es
+   * una decisión del usuario porque la flor depende de la mesa: en muchas se
+   * canta y en otras ni se nombra.
+   */
+  conFlor: false,
+  /**
+   * El valor de la flor del rival, cuando ya se sabe por el envite.
+   *
+   * La belief dice cuánto chances tiene de tener flor, no cuánto vale: el valor
+   * solo se conoce cuando cantan las dos. Antes de eso la pantalla usa la
+   * probabilidad para decidir si ofrecer el envite de flores.
+   */
+  florRival: null as number | null,
 };
 
 const app = document.querySelector<HTMLDivElement>("#cuerpo")!;
@@ -126,6 +142,7 @@ function render(): void {
     seccionConfig(),
     seccionMano(deck, listo),
     seccionObservaciones(),
+    seccionCantos(listo),
     seccionConsejo(listo),
     seccionRespuesta(listo),
     seccionJuego(listo, deck),
@@ -238,13 +255,12 @@ function seccionMano(deck: CardInfo[], listo: boolean): HTMLElement {
 
   if (listo) {
     const info = motor.snapshot;
-    if (info.has_flor) {
+    if (info.has_flor && !estado.conFlor) {
+      // Con la flor apagada solo se avisa: es la forma de enterarte de que tenés
+      // una flor sin que la pantalla se ponga a cantar sola.
       caja.append(
         aviso(
-          "Tenés flor. Es obligada: cantala antes que nada y anula el envido. " +
-            (info.p_opponent_flor > 0.2
-              ? `El rival tiene un ${(info.p_opponent_flor * 100).toFixed(0)} % de chances de tener flor también.`
-              : "El rival probablemente no tiene."),
+          "Tenés flor. La pantalla tiene el canto de flor apagado; prendelo arriba si en tu mesa se canta.",
           "flor",
         ),
       );
@@ -252,6 +268,271 @@ function seccionMano(deck: CardInfo[], listo: boolean): HTMLElement {
   }
 
   return caja;
+}
+
+/**
+ * Flor y truco.
+ *
+ * Lo que el motor trae es el **estado del canto** y cuántos puntos hay en juego.
+ * No trae consejo de flor ni de truco: todavía no hay matemática para eso, así
+ * que la pantalla no inventa ninguno. Lo que sí hace es no dejar que se juegue
+ * una mano que contradiga el canto —por ejemplo, seguir cantando envido con la
+ * flor pendiente, que es obligada.
+ */
+function seccionCantos(listo: boolean): HTMLElement {
+  const caja = section("cantos");
+  caja.append(el("h2", "titulo-seccion", "Flor y truco"));
+
+  if (ultimoErrorCanto) {
+    caja.append(aviso(ultimoErrorCanto, "error"));
+  }
+
+  // El interruptor va siempre: es la única forma de volver atrás si te sentaste
+  // en una mesa donde la flor no se canta.
+  const selFlor = document.createElement("input");
+  selFlor.type = "checkbox";
+  selFlor.checked = estado.conFlor;
+  selFlor.className = "interruptor";
+  selFlor.addEventListener("change", () => {
+    estado.conFlor = selFlor.checked;
+    estado.florRival = null;
+    motor.setFlor(estado.conFlor);
+    render();
+  });
+  const etiquetaFlor = el("label", "campo");
+  etiquetaFlor.append(selFlor, document.createTextNode(" se juega con flor"));
+  caja.append(etiquetaFlor);
+
+  if (!estado.conFlor) {
+    caja.append(aviso("Apagado: la pantalla no lleva la flor. El truco de abajo va igual.", "espera"));
+    caja.append(seccionTruco(listo));
+    return caja;
+  }
+
+  if (!listo) {
+    caja.append(aviso("Primero armá tu mano: sin las tres cartas no hay flor que cantar.", "espera"));
+    caja.append(seccionTruco(listo));
+    return caja;
+  }
+
+  const cantos = motor.snapshot.cantos;
+
+  if (cantos.flor_pendiente) {
+    caja.append(
+      aviso(
+        `Tenés flor de ${cantos.mi_flor}. Es obligada: cantala antes de apoyar una carta y anula el envido.`,
+        "flor",
+      ),
+    );
+    const probablemente = motor.snapshot.p_opponent_flor;
+    caja.append(
+      boton(
+        probablemente > 0.2 ? "¡Flor! (el rival puede tener)" : "¡Flor!",
+        () => seguro(() => motor.callFlor(true, probablemente > 0.2)),
+      ),
+    );
+    caja.append(
+      el(
+        "p",
+        "nota-belief",
+        probablemente > 0.2
+          ? `El rival tiene un ${(probablemente * 100).toFixed(0)} % de chances de tener flor también.`
+          : "El rival probablemente no tiene flor.",
+      ),
+    );
+  } else if (cantos.flor_fase === "sin-cantar" && cantos.mi_flor !== null) {
+    // Tengo flor pero todavía no cantó nadie: puede ser que el rival la cante
+    // primero, así que la opción está.
+    caja.append(aviso(`Tenés flor de ${cantos.mi_flor}. Si el rival la canta primero, respondé.`, "espera"));
+    caja.append(boton("el rival cantó flor", () => seguro(() => motor.callFlor(false, false))));
+  }
+
+  if (cantos.flor_fase === "envite") {
+    caja.append(aviso("Hay envite de flores: con flor quiero o flor me achico.", "flor"));
+    caja.append(filaEnviteFlor(cantos.mi_flor ?? 0));
+  }
+
+  if (cantos.flor_puntos !== null) {
+    caja.append(aviso(cantos.flor_resumen, "flor"));
+  } else if (cantos.flor_fase === "sin-cantar" && cantos.mi_flor === null) {
+    caja.append(aviso("No tenés flor en esta mano.", "espera"));
+  }
+
+  caja.append(seccionTruco(listo));
+  return caja;
+}
+
+/**
+ * Las dos respuestas al envite de flores.
+ *
+ * "Con flor quiero" son 4 puntos para la flor más alta y en empate gana el mano.
+ * "Flor me achico" son 3 para quien cantó flor, gane o pierda: el achique nunca
+ * es una apuesta, es la opción de no arriesgar.
+ */
+function filaEnviteFlor(miFlor: number): HTMLElement {
+  const fila = el("div", "fila-botones");
+  const rival = estado.florRival;
+
+  fila.append(
+    boton("con flor quiero", () => {
+      if (rival === null) {
+        avisoCanto("Anotá arriba cuánto vale la flor del rival para poder comparar.");
+        return;
+      }
+      try {
+        motor.answerFlor("con-flor-quiero", miFlor, rival);
+        estado.florRival = null;
+        render();
+      } catch (error) {
+        avisoCanto(`No se pudo responder el envite: ${(error as Error).message}`);
+      }
+    }),
+    boton("flor me achico", () => {
+      if (rival === null) {
+        avisoCanto("Anotá arriba cuánto vale la flor del rival para poder comparar.");
+        return;
+      }
+      try {
+        motor.answerFlor("flor-me-achico", miFlor, rival);
+        estado.florRival = null;
+        render();
+      } catch (error) {
+        avisoCanto(`No se pudo responder el envite: ${(error as Error).message}`);
+      }
+    }, "secundario"),
+  );
+
+  const campo = document.createElement("input");
+  campo.type = "number";
+  campo.min = "20";
+  campo.max = "38";
+  campo.placeholder = "flor del rival";
+  campo.className = "campo-flor";
+  campo.value = rival === null ? "" : String(rival);
+  campo.addEventListener("change", () => {
+    const valor = Number(campo.value);
+    if (!Number.isInteger(valor) || valor < 20 || valor > 38) {
+      avisoCanto("La flor del rival va de 20 a 38: 20 más las tres cartas, figuras en cero.");
+      return;
+    }
+    estado.florRival = valor;
+  });
+  const etiqueta = el("label", "campo");
+  etiqueta.append(campo, document.createTextNode(" su flor vale"));
+  fila.append(etiqueta);
+
+  return fila;
+}
+
+/** La escalera del truco: cantarlo, responderlo o subirlo. */
+function seccionTruco(listo: boolean): HTMLElement {
+  const caja = el("div", "truco");
+  if (!listo) {
+    caja.append(aviso("Armá tu mano para cantar truco.", "espera"));
+    return caja;
+  }
+
+  const t = motor.snapshot.cantos;
+  caja.append(el("h3", "subtitulo", "Truco"));
+  caja.append(aviso(t.truco_resumen, t.truco_cerrada ? "flor" : "espera"));
+
+  const botones = el("div", "fila-botones");
+
+  if (t.truco_cerrada) {
+    caja.append(botones);
+    if (t.truco_puntos_no_quiero > 0) {
+      caja.append(
+        aviso(
+          `No se quiso el ${t.truco_nivel || "truco"}: ${t.truco_puntos_no_quiero} puntos al que cantó.`,
+          "flor",
+        ),
+      );
+    }
+    return caja;
+  }
+
+  if (t.truco_en_el_aire) {
+    // Canté yo: hay que anotar lo que contesta el rival. La pelota está del otro
+    // lado, pero sin esto la escalera se trunca acá y no se puede subir nunca.
+    caja.append(aviso("Tu canto está en el aire: anotá abajo lo que responda.", "espera"));
+    const respuestas = el("div", "fila-botones");
+    respuestas.append(
+      el("span", "nota-belief", "el rival:"),
+      boton("quiso", () => seguro(() => motor.answerTruco("quiero", false))),
+      boton("no quiso", () => seguro(() => motor.answerTruco("no-quiero", false)), "secundario"),
+    );
+    if (t.truco_nivel !== "vale cuatro") {
+      respuestas.append(
+        boton(`subió a ${t.truco_nivel === "truco" ? "retruco" : "vale cuatro"}`, () =>
+          seguro(() => motor.answerTruco("subir", false)),
+        ),
+      );
+    }
+    caja.append(respuestas);
+    return caja;
+  }
+
+  if (t.truco_esperando) {
+    // Me cantaron a mí: el rival cantó y le toca responderme.
+    botones.append(boton("quiero", () => seguro(() => motor.answerTruco("quiero", true)), "secundario"));
+    botones.append(
+      boton("no quiero", () => seguro(() => motor.answerTruco("no-quiero", true)), "secundario"),
+    );
+    if (t.truco_nivel !== "vale cuatro") {
+      botones.append(
+        boton(`subo a ${t.truco_nivel === "truco" ? "retruco" : "vale cuatro"}`, () =>
+          seguro(() => motor.answerTruco("subir", true)),
+        ),
+      );
+    }
+    caja.append(botones);
+    caja.append(
+      el(
+        "p",
+        "nota-belief",
+        `Si querés, la mano vale ${t.truco_puntos_en_juego} puntos. Si no querés, ${t.truco_si_no_quiero} al que cantó.`,
+      ),
+    );
+    return caja;
+  }
+
+  if (t.truco_puede_subir) {
+    // Ya acepté: el escalón es mío, así que subir es cantar yo, no responder.
+    botones.append(
+      boton(`subo a ${t.truco_nivel === "truco" ? "retruco" : "vale cuatro"}`, () =>
+        seguro(() => motor.callTruco(true)),
+      ),
+    );
+  }
+  if (t.truco_puede_cantar) {
+    botones.append(boton("truco", () => seguro(() => motor.callTruco(true))));
+    botones.append(
+      boton("el rival cantó truco", () => seguro(() => motor.callTruco(false)), "secundario"),
+    );
+  }
+  caja.append(botones);
+  if (!t.truco_puede_cantar && !t.truco_puede_subir) {
+    caja.append(el("p", "nota-belief", "No hay canto tuyo por hacer."));
+  }
+  return caja;
+}
+
+/** Corre una acción del motor y, si falla, lo dice sin romper la pantalla. */
+function seguro(accion: () => void): void {
+  try {
+    accion();
+    ultimoErrorCanto = "";
+    render();
+  } catch (error) {
+    avisoCanto(`No se pudo: ${(error as Error).message}`);
+  }
+}
+
+/** El último error de un canto, que se borra sola al tocar algo. */
+let ultimoErrorCanto = "";
+function avisoCanto(texto: string): void {
+  ultimoErrorCanto = texto;
+  render();
 }
 
 function seccionObservaciones(): HTMLElement {
@@ -384,6 +665,22 @@ function seccionConsejo(listo: boolean): HTMLElement {
   }
   caja.append(principal);
 
+  // El riesgo de perder la partida va arriba de todo, y en grande.
+  //
+  // Va primero a propósito. El motor optimiza puntos esperados, y con eso ya
+  // contesta una pregunta; la que le hiciste vos en la mesa es otra. Un "+3.56
+  // de EV" al lado de "te quedás sin la partida el 14 % de las veces" es el
+  // mismo dato que el motor ya tenía y que no mostraba.
+  if (consejo.risk_match > 0) {
+    caja.append(
+      aviso(
+        `Esta jugada te deja sin la partida el ${(consejo.risk_match * 100).toFixed(0)} % de las veces. ` +
+          "El EV de abajo son puntos esperados, no la chance de que te quedes con algo.",
+        "riesgo",
+      ),
+    );
+  }
+
   if (info.falta_asymmetric) {
     caja.append(
       aviso(
@@ -399,8 +696,14 @@ function seccionConsejo(listo: boolean): HTMLElement {
     item.append(
       el("span", "opcion-nombre", capitalizar(opcion.choice) + (opcion.is_bluff ? " (bluff)" : "")),
       el("span", "opcion-ev", `${opcion.ev >= 0 ? "+" : ""}${opcion.ev.toFixed(2)}`),
-      el("span", "opcion-detalle", `${(opcion.p_they_want * 100).toFixed(0)} % te aceptan`),
+      el(
+        "span",
+        "opcion-detalle",
+        `${(opcion.p_they_want * 100).toFixed(0)} % te aceptan · ${opcion.points} en juego` +
+          (opcion.risk_match > 0 ? ` · ${(opcion.risk_match * 100).toFixed(0)} % sin partido` : ""),
+      ),
     );
+    if (opcion.risk_match > 0) item.classList.add("arriesgada");
     lista.append(item);
   }
   caja.append(lista);
@@ -457,14 +760,31 @@ function seccionRespuesta(listo: boolean): HTMLElement {
   );
   caja.append(principal);
 
+  // Mismo criterio que en el consejo de apertura: si la respuesta puede dejarte
+  // sin la partida, eso va arriba y en grande, no abajo en la lista.
+  if (consejo.risk_match > 0) {
+    caja.append(
+      aviso(
+        `Responder así te deja sin la partida el ${(consejo.risk_match * 100).toFixed(0)} % de las veces.`,
+        "riesgo",
+      ),
+    );
+  }
+
   const lista = el("ul", "opciones");
   for (const opcion of consejo.options) {
     const item = el("li", `opcion${opcion.choice === consejo.recommended ? " elegida" : ""}`);
     item.append(
       el("span", "opcion-nombre", textoRespuesta(opcion.choice)),
       el("span", "opcion-ev", `${opcion.ev >= 0 ? "+" : ""}${opcion.ev.toFixed(2)}`),
-      el("span", "opcion-detalle", `${opcion.points} puntos en juego`),
+      el(
+        "span",
+        "opcion-detalle",
+        `${opcion.points} puntos en juego` +
+          (opcion.risk_match > 0 ? ` · ${(opcion.risk_match * 100).toFixed(0)} % sin partido` : ""),
+      ),
     );
+    if (opcion.risk_match > 0) item.classList.add("arriesgada");
     lista.append(item);
   }
   caja.append(lista);

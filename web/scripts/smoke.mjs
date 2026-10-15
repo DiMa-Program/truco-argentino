@@ -258,6 +258,330 @@ try {
 }
 chequeo(secuenciaInvalida, "una secuencia ilegal da error, no un consejo inventado");
 
+// ---------------------------------------------------------------------------
+// Cerrar la baza
+//
+// El flujo de "cerrá la baza" es nuevo y lo único que lo cubre son los tests de
+// Rust del modulo `advisor`. Esto lo mira por el lado del navegador, que es donde
+// la UI lo arma: que el historial se pueda deshacer, que no acepte una carta ya
+// jugada y que el estado derivado cambie.
+// ---------------------------------------------------------------------------
+
+motor.setHand(Uint8Array.from([6, 5, 22])); // 7e + 6e + 3c
+motor.setScore(0, 0);
+
+// Motor limpio para la parte de bazas, así no arrastra cantos ni manos de antes.
+motor.setHand(Uint8Array.from([6, 5, 22]));
+
+// Una baza normal: yo el 3 de copa, él el 1 de oros, gano yo.
+motor.recordTrick(22, 7, true);
+const trasUna = JSON.parse(motor.snapshot());
+chequeo(trasUna.belief_size < 7770, "cerrar una baza achica la belief", `tiene ${trasUna.belief_size}`);
+
+const consejoDespues = JSON.parse(motor.bestPlay(1));
+chequeo(
+  consejoDespues.card !== "3 de Copa",
+  "la carta ya jugada no vuelve a aparecer como salida",
+  `sugirió ${consejoDespues.card}`,
+);
+
+// Deshacer deja el estado exactamente como estaba.
+motor.undoTrick();
+const trasDeshacer = JSON.parse(motor.snapshot());
+chequeo(
+  trasDeshacer.belief_size === 7770,
+  "deshacer una baza devuelve la belief al punto de partida",
+  `tiene ${trasDeshacer.belief_size}`,
+);
+
+// La misma carta dos veces es un error, no una decisión.
+motor.recordTrick(22, 7, true);
+let repetida = false;
+try {
+  motor.recordTrick(22, 3, true);
+} catch {
+  repetida = true;
+}
+chequeo(repetida, "no se puede jugar dos veces la misma carta");
+
+// Una carta que no está en la mano tampoco.
+let ajena = false;
+try {
+  motor.recordTrick(1, 7, true);
+} catch {
+  ajena = true;
+}
+chequeo(ajena, "no se puede registrar una carta que no tenés");
+
+// ---------------------------------------------------------------------------
+// Flor
+// ---------------------------------------------------------------------------
+
+// 3e + 4e + 5e: flor de 32.
+motor.undoTrick();
+motor.setHand(Uint8Array.from([2, 3, 4]));
+motor.setFlor(true);
+
+const conFlor = JSON.parse(motor.snapshot());
+chequeo(conFlor.has_flor, "reconoce la flor propia");
+chequeo(conFlor.cantos.flor_enabled, "la flor queda prendida");
+chequeo(conFlor.cantos.flor_pendiente, "con flor hay que cantarla");
+chequeo(conFlor.cantos.mi_flor === 32, "la flor vale 20 más las tres cartas", `vale ${conFlor.cantos.mi_flor}`);
+chequeo(
+  JSON.parse(motor.advice()).reasons.some((r) => r.includes("flor") && r.includes("obligada")),
+  "el consejo del envido avisa que la flor va primero",
+  `razones: ${JSON.parse(motor.advice()).reasons.join(" | ")}`,
+);
+// El aviso de flor va al FINAL y no al principio: es una corrección sobre el
+// consejo, y si fuera primero taparía el EV que es lo que sirve para decidir.
+chequeo(
+  !JSON.parse(motor.advice()).reasons[0].includes("flor"),
+  "y la flor no tapa el EV, que es lo que sirve para decidir",
+  `primera razón: ${JSON.parse(motor.advice()).reasons[0]}`,
+);
+
+// Flor sola: se resuelve en el acto.
+motor.callFlor(true, false);
+const florSola = JSON.parse(motor.snapshot());
+chequeo(florSola.cantos.flor_fase === "resuelta", "sin flor rival se resuelve en el acto");
+chequeo(florSola.cantos.flor_ganador === "yo", "la flor sola es para el que la cantó");
+chequeo(florSola.cantos.flor_puntos === 3, "la flor sola da 3 puntos", `dio ${florSola.cantos.flor_puntos}`);
+
+// Flor en los dos: abre envite y no se paga hasta que responda.
+motor.setHand(Uint8Array.from([2, 3, 4]));
+motor.callFlor(true, true);
+const enEnvite = JSON.parse(motor.snapshot());
+chequeo(enEnvite.cantos.flor_fase === "envite", "con flor en los dos abre envite");
+chequeo(enEnvite.cantos.flor_puntos === null, "el envite todavía no se paga");
+
+// Si la cantaste vos, el que contesta el envite es el rival: no podés responderte.
+let autoEnvite = false;
+try {
+  motor.answerFlor("con-flor-quiero", 32, 33);
+} catch {
+  autoEnvite = true;
+}
+chequeo(autoEnvite, "no se responde el envite de una flor que cantaste vos");
+
+// Ahora el que cantó es el rival y te toca a vos. Con flor quiero: 4 puntos para
+// la flor más alta, que acá es la del rival (33 contra mis 32).
+motor.setHand(Uint8Array.from([2, 3, 4]));
+motor.callFlor(false, false);
+const respondio = JSON.parse(motor.snapshot());
+chequeo(
+  respondio.cantos.flor_fase === "envite",
+  "si el rival tiene flor y vos también, abre envite",
+  `fase ${respondio.cantos.flor_fase}`,
+);
+motor.answerFlor("con-flor-quiero", 32, 33);
+const quiero = JSON.parse(motor.snapshot());
+chequeo(quiero.cantos.flor_ganador === "rival", "con flor quiero gana la flor más alta");
+chequeo(quiero.cantos.flor_puntos === 4, "con flor quiero da 4 puntos", `dio ${quiero.cantos.flor_puntos}`);
+
+// Flor me achico: 3 para el que cantó, aunque tenga la flor más alta.
+motor.setHand(Uint8Array.from([2, 3, 4]));
+motor.callFlor(false, false);
+motor.answerFlor("flor-me-achico", 32, 33);
+const achico = JSON.parse(motor.snapshot());
+chequeo(achico.cantos.flor_ganador === "rival", "flor me achico se lo lleva el que cantó, no el más alto");
+chequeo(achico.cantos.flor_puntos === 3, "flor me achico da 3 puntos", `dio ${achico.cantos.flor_puntos}`);
+
+// Si el rival tiene flor y vos no, se resuelve sin envite.
+motor.setHand(Uint8Array.from([6, 5, 22])); // sin flor
+motor.callFlor(false, false);
+const rivalSolo = JSON.parse(motor.snapshot());
+chequeo(rivalSolo.cantos.flor_fase === "resuelta", "si vos no tenés flor, no hay envite");
+chequeo(rivalSolo.cantos.flor_ganador === "rival", "la flor sola del rival es para él");
+chequeo(rivalSolo.cantos.flor_puntos === 3, "la flor sola del rival da 3 puntos");
+
+// No se puede cantar flor sin tenerla.
+motor.setHand(Uint8Array.from([6, 5, 22]));
+let sinFlor = false;
+try {
+  motor.callFlor(true, false);
+} catch {
+  sinFlor = true;
+}
+chequeo(sinFlor, "no se puede cantar flor sin tenerla");
+
+// Con la flor apagada no hay nada que cantar.
+motor.setHand(Uint8Array.from([2, 3, 4]));
+motor.setFlor(false);
+const florOff = JSON.parse(motor.snapshot());
+chequeo(florOff.cantos.flor_pendiente === false, "con la flor apagada no hay nada que cantar");
+chequeo(florOff.cantos.flor_fase === "sin-cantar", "con la flor apagada la fase no avanza");
+let florConOff = false;
+try {
+  motor.callFlor(true, false);
+} catch {
+  florConOff = true;
+}
+chequeo(florConOff, "con la flor apagada cantar flor da error");
+
+// ---------------------------------------------------------------------------
+// Truco
+// ---------------------------------------------------------------------------
+
+motor.setFlor(true);
+motor.setHand(Uint8Array.from([6, 5, 22])); // sin flor: a la carta
+
+const trucoCero = JSON.parse(motor.snapshot());
+chequeo(trucoCero.cantos.truco_puede_cantar, "se puede cantar truco de entrada");
+chequeo(trucoCero.cantos.truco_nivel === "", "sin cantar no hay nivel", `dio "${trucoCero.cantos.truco_nivel}"`);
+
+motor.callTruco(true);
+const cantado = JSON.parse(motor.snapshot());
+chequeo(cantado.cantos.truco_nivel === "truco", "cantar truco deja el nivel en truco");
+chequeo(cantado.cantos.truco_en_el_aire, "el canto propio queda en el aire");
+chequeo(cantado.cantos.truco_puntos_en_juego === 2, "el truco querido vale 2 puntos");
+chequeo(cantado.cantos.truco_si_no_quiero === 1, "no querer el truco paga 1 punto");
+
+// No se contesta uno mismo: el canto propio espera al rival.
+let auto = false;
+try {
+  motor.answerTruco("quiero", true);
+} catch {
+  auto = true;
+}
+chequeo(auto, "no se responde el canto propio");
+
+// Ahora canta el rival y le toca responder a uno.
+motor.setHand(Uint8Array.from([6, 5, 22]));
+motor.callTruco(false);
+const meToca = JSON.parse(motor.snapshot());
+chequeo(meToca.cantos.truco_esperando, "si canta el rival, me toca responder");
+chequeo(!meToca.cantos.truco_en_el_aire, "y no queda en el aire");
+
+// Subir es aceptar y cantar el siguiente escalón.
+motor.answerTruco("subir", true);
+const retruco = JSON.parse(motor.snapshot());
+chequeo(retruco.cantos.truco_nivel === "retruco", "subir pasa a retruco");
+chequeo(retruco.cantos.truco_en_el_aire, "subir deja el canto propio en el aire");
+chequeo(
+  retruco.cantos.truco_puntos_en_juego === 3 && retruco.cantos.truco_si_no_quiero === 2,
+  "el retruco querido vale 3 y el no querido paga 2",
+  `quiero ${retruco.cantos.truco_puntos_en_juego}, no quiero ${retruco.cantos.truco_si_no_quiero}`,
+);
+
+// Subir la escalera completa. "Subir" ya es quiero + subir, así que encadenar
+// cantos es encadenar subidas: no hace falta un callTruco en el medio.
+motor.answerTruco("subir", false);
+const valeCuatro = JSON.parse(motor.snapshot());
+chequeo(valeCuatro.cantos.truco_nivel === "vale cuatro", "el rival sube a vale cuatro");
+chequeo(valeCuatro.cantos.truco_esperando, "y me toca decidir a mí");
+motor.answerTruco("quiero", true);
+const querido = JSON.parse(motor.snapshot());
+const cond = querido.cantos.truco_aceptado;
+chequeo(cond, "quiero el vale cuatro y queda aceptado", JSON.stringify(querido.cantos));
+chequeo(
+  querido.cantos.truco_puntos_en_juego === 4 && querido.cantos.truco_si_no_quiero === 3,
+  "el vale cuatro querido vale 4 y el no querido paga 3",
+  `quiero ${querido.cantos.truco_puntos_en_juego}, no quiero ${querido.cantos.truco_si_no_quiero}`,
+);
+
+// Del vale cuatro no se pasa.
+let tope = false;
+try {
+  motor.answerTruco("subir", true);
+} catch {
+  tope = true;
+}
+chequeo(tope, "del vale cuatro no se sube más");
+
+// No quiero el truco paga 1 y cierra la mano.
+motor.setHand(Uint8Array.from([6, 5, 22]));
+motor.callTruco(false);
+motor.answerTruco("no-quiero", true);
+const noQuiso = JSON.parse(motor.snapshot());
+chequeo(noQuiso.cantos.truco_cerrada, "el no quiero cierra la mano");
+chequeo(noQuiso.cantos.truco_puntos_no_quiero === 1, "y paga 1 punto al que cantó");
+
+// Una mano cerrada no acepta más cantos.
+let despues = false;
+try {
+  motor.callTruco(true);
+} catch {
+  despues = true;
+}
+chequeo(despues, "una mano cerrada no acepta otro canto");
+
+// ---------------------------------------------------------------------------
+// El riesgo de perder la partida
+//
+// El motor optimiza puntos esperados, y con eso ya contestaba una pregunta. La
+// que se hace en la mesa es otra: un "+3 de EV" al lado de "te quedás sin la
+// partido el 14 %" es el mismo dato, mirado distinto. Estos tests fijan que el
+// número llegue a la pantalla.
+// ---------------------------------------------------------------------------
+
+// El marcador va ANTES que la mano, y el orden importa: `setHand` reinicia el
+// estado de los cantos, pero `setScore` no toca la mano. Al revés, el marcador
+// del test anterior se queda y la falta deja de valer el partido entero.
+motor.setFlor(false);
+motor.setScore(0, 0);
+motor.setHand(Uint8Array.from([0, 2, 22])); // 1e + 3e + 3c: 24, un tanto medio
+
+const conRiesgo = JSON.parse(motor.advice());
+const opcionFalta = conRiesgo.options.find((o) => o.choice === "falta envido");
+chequeo(
+  opcionFalta !== undefined,
+  "la falta envido está entre las opciones",
+);
+chequeo(
+  opcionFalta.points >= 30,
+  "a 0-0 la falta está por el partido entero",
+  `dice ${opcionFalta.points}`,
+);
+chequeo(
+  opcionFalta.risk_match > 0.05,
+  "y avisa que podés perder la partida",
+  `riesgo ${(opcionFalta.risk_match * 100).toFixed(0)} %`,
+);
+chequeo(
+  conRiesgo.risk_match === opcionFalta.risk_match ||
+    conRiesgo.risk_match === 0,
+  "el riesgo de la recomendación es el de la opción recomendada",
+  `rec ${conRiesgo.risk_match} contra opción ${opcionFalta.risk_match}`,
+);
+chequeo(
+  conRiesgo.reasons[0].includes("sin la partida"),
+  "y lo dice arriba del todo, no enterrado en la lista",
+  `primera razón: ${conRiesgo.reasons[0]}`,
+);
+
+// Con 33 el riesgo es bajísimo y el consejo tiene que poder ser "firme": si
+// el umbral fuera solo "la jugada cierra el partido", el 33 también saldría
+// como empate y eso sería una perda de información.
+motor.setHand(Uint8Array.from([6, 5, 22])); // 7e + 6e + 3c
+const conEl33 = JSON.parse(motor.advice());
+const opcion33 = conEl33.options.find((o) => o.choice === "falta envido");
+chequeo(
+  opcion33.risk_match < 0.05,
+  "con 33 el riesgo de perder la partida es bajísimo",
+  `riesgo ${(opcion33.risk_match * 100).toFixed(0)} %`,
+);
+chequeo(
+  conEl33.confidence === "firme",
+  "y con 33 el consejo puede ser firme",
+  `es "${conEl33.confidence}"`,
+);
+
+// Con alguno en buenas la falta no cierra para el que va atrás: riesgo cero.
+motor.setHand(Uint8Array.from([0, 2, 22])); // el 24
+motor.setScore(25, 5);
+const enBuenas = JSON.parse(motor.advice());
+const opcionBuenas = enBuenas.options.find((o) => o.choice === "falta envido");
+chequeo(
+  opcionBuenas.risk_match === 0,
+  "con alguno en buenas la falta no cierra: riesgo cero",
+  `riesgo ${opcionBuenas.risk_match}`,
+);
+chequeo(
+  opcionBuenas.points === 5,
+  "y vale lo que le falta al que va primero",
+  `vale ${opcionBuenas.points}`,
+);
+
 motor.free();
 console.log(fallos === 0 ? "\ntodo bien" : `\n${fallos} comprobaciones fallaron`);
 process.exit(fallos === 0 ? 0 : 1);

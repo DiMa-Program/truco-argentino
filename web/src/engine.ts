@@ -19,6 +19,36 @@ export interface Snapshot {
   belief_size: number;
   concentration: number;
   declared: number | null;
+  cantos: CantosJson;
+}
+
+/**
+ * Flor y truco.
+ *
+ * El motor no calcula consejo de flor ni de truco: todavía no hay matemática
+ * para eso. Lo que trae es el estado del canto y cuántos puntos hay en juego, que
+ * es lo que la pantalla necesita para pintar los botones sin inventar nada.
+ */
+export interface CantosJson {
+  flor_enabled: boolean;
+  flor_pendiente: boolean;
+  mi_flor: number | null;
+  flor_fase: "sin-cantar" | "envite" | "resuelta";
+  flor_ganador: "yo" | "rival" | null;
+  flor_puntos: number | null;
+  flor_resumen: string;
+  truco_fase: "sin-cantar" | "esperando" | "aceptado" | "rechazado";
+  truco_nivel: string;
+  truco_puede_cantar: boolean;
+  truco_puede_subir: boolean;
+  truco_esperando: boolean;
+  truco_en_el_aire: boolean;
+  truco_aceptado: boolean;
+  truco_puntos_en_juego: number;
+  truco_puntos_no_quiero: number;
+  truco_si_no_quiero: number;
+  truco_cerrada: boolean;
+  truco_resumen: string;
 }
 
 export interface EnvidoOptionJson {
@@ -29,6 +59,14 @@ export interface EnvidoOptionJson {
   points: number;
   is_bluff: boolean;
   declared: number;
+  /**
+   * Probabilidad de que esta jugada en particular te deje sin la partida.
+   *
+   * Cero para cualquier canto que no la cierre. Es el dato que el EV no
+   * alcanza a decir: el EV son puntos, y +3 puntos no es lo mismo que un 14 % de
+   * perder todo.
+   */
+  risk_match: number;
 }
 
 export interface Advice {
@@ -38,6 +76,8 @@ export interface Advice {
   my_value: number;
   p_win_envido: number;
   points_at_stake: number;
+  /** Riesgo de perder la partida con la opción recomendada. */
+  risk_match: number;
   options: EnvidoOptionJson[];
   reasons: string[];
 }
@@ -55,6 +95,8 @@ export interface ResponseOptionJson {
   ev: number;
   points: number;
   equilibrium_mass: number;
+  /** Riesgo de que esta respuesta te deje sin la partida. */
+  risk_match: number;
 }
 
 /** La respuesta a un canto: quiero, no quiero o subir. */
@@ -63,6 +105,8 @@ export interface ResponseAdvice {
   confidence: string;
   p_win_if_wanted: number;
   declared: number;
+  /** Riesgo de perder la partida con la respuesta recomendada. */
+  risk_match: number;
   options: ResponseOptionJson[];
   reasons: string[];
 }
@@ -82,6 +126,11 @@ interface TrucoWasm {
   recordTrick(myCard: number, theirCard: number, iWon: boolean): void;
   undoTrick(): void;
   responseAdvice(seq: string, declared: number): string;
+  setFlor(enabled: boolean): void;
+  callFlor(iCalled: boolean, rivalHasFlor: boolean): void;
+  answerFlor(choice: string, myFlor: number, theirFlor: number): void;
+  callTruco(iCalled: boolean): void;
+  answerTruco(choice: string, iAnswer: boolean): void;
   isReady(): boolean;
   snapshot(): string;
   advice(): string;
@@ -192,6 +241,62 @@ export class Engine {
   undoTrick(): void {
     this.#requiere().undoTrick();
   }
+
+  // -------------------------------------------------------------- cantos
+
+  /**
+   * Prende o apaga el canto de flor.
+   *
+   * Apagado la pantalla no muestra nada de flor. El motor igual conserva el
+   * valor, así que si jugás con flor se juega con flor en todas las manos.
+   */
+  setFlor(enabled: boolean): void {
+    this.#requiere().setFlor(enabled);
+  }
+
+  /**
+   * Registra que alguien cantó flor.
+   *
+   * `iCalled` dice cuál de los dos la cantó: la pantalla es la que sabe si la
+   * cantaste vos o la cantó el rival. `rivalHasFlor` sale de `p_opponent_flor`
+   * de la belief. De eso sale si hay envite.
+   */
+  callFlor(iCalled: boolean, rivalHasFlor: boolean): void {
+    this.#requiere().callFlor(iCalled, rivalHasFlor);
+  }
+
+  /**
+   * Responde un envite de flores.
+   *
+   * Solo si la flor la cantó el rival. Los valores van de 20 a 38 y son 20 más
+   * las tres cartas, con las figuras en cero; solo se comparan con el "con flor
+   * quiero".
+   */
+  answerFlor(choice: "con-flor-quiero" | "flor-me-achico", myFlor: number, theirFlor: number): void {
+    this.#requiere().answerFlor(choice, myFlor, theirFlor);
+  }
+
+  /**
+   * Canta truco, retruco o vale cuatro, según dónde esté la escalera.
+   *
+   * `iCalled` dice si cantaste vos o el rival. Sin esto el motor se llenaba de
+   * cantos propios que nadie podía responder.
+   */
+  callTruco(iCalled: boolean): void {
+    this.#requiere().callTruco(iCalled);
+  }
+
+  /**
+   * Responde un canto de truco.
+   *
+   * `iAnswer` dice quién contesta: hace falta por los dos lados, para anotar lo
+   * que te dijo el rival y también lo que le dijiste vos. Sin el lado del que
+   * responde, la escalera se trunca en el primer canto.
+   */
+  answerTruco(choice: "quiero" | "no-quiero" | "subir", iAnswer: boolean): void {
+    this.#requiere().answerTruco(choice, iAnswer);
+  }
+
   /** Cierra el motor y libera su memoria. */
   dispose(): void {
     if (!this.#truco) return;

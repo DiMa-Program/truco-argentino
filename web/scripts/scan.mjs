@@ -73,6 +73,34 @@ function chequeo(nombre, fn, fn2 = fn) {
   return r;
 }
 
+/**
+ * Exige que la llamada falle con un error LIMPIO, y que el mensaje se pueda
+ * mostrar en la pantalla.
+ *
+ * Es distinto de `correr`: acá el error es el resultado esperado. Un mensaje
+ * vacío o genérico no sirve, porque en la mesa el usuario solo ve eso.
+ */
+function chequearMensaje(nombre, fn) {
+  pruebas++;
+  try {
+    fn();
+    console.log(`  [MAL] ${nombre}: debería haber dado error y no dio`);
+    fallos++;
+  } catch (e) {
+    const m = String(e.message ?? e);
+    if (PANICS.some((p) => m.includes(p))) {
+      console.log(`  [PANIC] ${nombre}`);
+      console.log(`           -> ${m.slice(0, 90)}`);
+      fallos++;
+      return;
+    }
+    if (m.trim().length === 0) {
+      console.log(`  [MAL] ${nombre}: el error vino sin mensaje`);
+      fallos++;
+    }
+  }
+}
+
 const motor = () => {
   const m = new glue.Truco();
   m.loadTables(tablas());
@@ -80,10 +108,17 @@ const motor = () => {
   return m;
 };
 
-/** `free()` nunca debe matar el scan: después de un panic puede fallar. */
+/**
+ * `free()` nunca debe matar el scan: después de un panic puede fallar.
+ *
+ * Ojo con una trampa que ya estuvo acá: esta función se llamaba a sí misma en
+ * vez de a `m.free()`. La recursión infinita tiraba "Maximum call stack size
+ * exceeded", que el `catch` se comía, así que el scan pasaba limpio y NUNCA
+ * liberaba un motor: casi 2 MB de tabla por caso, todas las pruebas juntas.
+ */
 function liberar(m) {
   try {
-    liberar(m);
+    m.free();
   } catch {
     /* se reporta en la sección 9 */
   }
@@ -389,6 +424,147 @@ console.log("\n9. free() después de un error");
   if (r.estado === "panic") {
     console.log("  [MAL] el motor queda con la memoria takena: free() no funciona nunca más");
   }
+}
+
+// --- 10. Flor y truco ------------------------------------------------------
+
+console.log("\n10. Flor y truco");
+{
+  const CON_FLOR = [2, 3, 4]; // 3e + 4e + 5e: flor de 32
+  const SIN_FLOR = [6, 5, 22]; // 7e + 6e + 3c: sin flor
+
+  // 10a. La flor apagada no tiene que dejar pasar nada.
+  const off = motor();
+  off.setHand(Uint8Array.from(CON_FLOR));
+  off.setFlor(false);
+  off.setFlor(false);
+  for (const cartas of [CON_FLOR, SIN_FLOR]) {
+    off.setHand(Uint8Array.from(cartas));
+    correr("flor apagada: snapshot + advice", () => [off.snapshot(), off.advice()]);
+  }
+  // Con la flor apagada, cantar tiene que ser un error claro.
+  off.setHand(Uint8Array.from(CON_FLOR));
+  chequearMensaje("cantar flor con la flor apagada", () => off.callFlor(true, true));
+  // Y no puede quedar en un estado a medio camino.
+  const estadoOff = JSON.parse(off.snapshot()).cantos;
+  if (estadoOff.flor_fase !== "sin-cantar" || estadoOff.flor_puntos !== null) {
+    console.log("  [MAL] la flor apagada dejó el canto a medio camino");
+    fallos++;
+  }
+  liberar(off);
+
+  // 10b. Cantar flor sin tenerla.
+  const sin = motor();
+  sin.setHand(Uint8Array.from(SIN_FLOR));
+  sin.setFlor(true);
+  chequearMensaje("cantar flor sin tenerla", () => sin.callFlor(true, false));
+  chequearMensaje("cantar flor sin tenerla, con el rival también", () => sin.callFlor(true, true));
+  liberar(sin);
+
+  // 10c. Respuestas de flor que no existen.
+  const con = motor();
+  con.setHand(Uint8Array.from(CON_FLOR));
+  con.setFlor(true);
+  con.callFlor(false, false); // el rival cantó y yo tengo flor: abre envite
+  for (const respuesta of ["", "quiero", "no-quiero", "con flor quiero", "QUIERO", "con-flor-quiero-x"]) {
+    chequearMensaje(`answerFlor("${respuesta}")`, () => con.answerFlor(respuesta, 32, 33));
+  }
+  // Valores de flor fuera del rango del reglamento (20..=38).
+  for (const [a, b] of [[0, 33], [33, 0], [19, 33], [33, 39], [255, 33], [33, 255]]) {
+    const r = correr(`answerFlor con flores ${a}/${b}`, () =>
+      con.answerFlor("con-flor-quiero", a, b),
+    );
+    // Con valores imposibles el motor no puede decidir: tiene que avisar, no
+    // elegir un ganador.
+    if (r.estado === "ok") {
+      console.log("  [MAL] aceptó una flor imposible y repartió los puntos");
+      fallos++;
+    }
+  }
+  // Contestar el envite de una flor que cantaste vos.
+  const propio = motor();
+  propio.setHand(Uint8Array.from(CON_FLOR));
+  propio.setFlor(true);
+  propio.callFlor(true, true); // canté yo: el que contesta es el rival
+  chequearMensaje("contestar el envite de tu propia flor", () =>
+    propio.answerFlor("con-flor-quiero", 32, 33),
+  );
+  liberar(propio);
+  // Y responder un envite que no existe.
+  const sinEnvite = motor();
+  sinEnvite.setHand(Uint8Array.from(CON_FLOR));
+  sinEnvite.setFlor(true);
+  sinEnvite.callFlor(true, false); // flor sola: ya se resolvió
+  chequearMensaje("contestar un envite que no existe", () =>
+    sinEnvite.answerFlor("con-flor-quiero", 32, 33),
+  );
+  liberar(sinEnvite);
+
+  // 10d. La escalera del truco completa, y todo lo que no se puede hacer.
+  const t = motor();
+  t.setHand(Uint8Array.from(SIN_FLOR));
+  for (const r of ["", "quiero", "no-quiero", "subir", "SUBIR", "retruco", "vale cuatro"]) {
+    chequearMensaje(`answerTruco("${r}") sin canto`, () => t.answerTruco(r, true));
+  }
+  correr("callTruco + snapshot", () => t.callTruco(false));
+  chequearMensaje("cantar truco encima de un canto sin responder", () => t.callTruco(false));
+
+  // Con el canto mío en el aire, responderlo es imposible.
+  const trucoPropio = motor();
+  trucoPropio.setHand(Uint8Array.from(SIN_FLOR));
+  trucoPropio.callTruco(true);
+  for (const r of ["quiero", "no-quiero", "subir"]) {
+    chequearMensaje(`answerTruco("${r}") de tu propio canto`, () => trucoPropio.answerTruco(r, true));
+  }
+  chequearMensaje("cantar encima de tu propio canto", () => trucoPropio.callTruco(false));
+  chequearMensaje("cantar tu propio canto dos veces", () => trucoPropio.callTruco(true));
+  liberar(trucoPropio);
+
+  // Subir toda la escalera, del truco al vale cuatro, y frenar ahí.
+  const escalera = motor();
+  escalera.setHand(Uint8Array.from(SIN_FLOR));
+  escalera.callTruco(false); // canta el rival
+  escalera.answerTruco("subir", true); // quiero + retruco
+  escalera.answerTruco("subir", false); // el rival quiero + sube a vale cuatro
+  escalera.answerTruco("quiero", true); // quiero el vale cuatro
+  const tope = JSON.parse(escalera.snapshot()).cantos;
+  if (tope.truco_nivel !== "vale cuatro") {
+    console.log(`  [MAL] la escalera no termina en vale cuatro sino en "${tope.truco_nivel}"`);
+    fallos++;
+  }
+  chequearMensaje("subir por encima del vale cuatro", () => escalera.answerTruco("subir", true));
+  chequearMensaje("cantar por encima del vale cuatro", () => escalera.callTruco(true));
+  liberar(escalera);
+
+  // Después de un "no quiero" la mano está cerrada.
+  const cerrado = motor();
+  cerrado.setHand(Uint8Array.from(SIN_FLOR));
+  cerrado.callTruco(false);
+  cerrado.answerTruco("no-quiero", true);
+  chequearMensaje("cantar truco en una mano cerrada", () => cerrado.callTruco(true));
+  chequearMensaje("responder truco en una mano cerrada", () => cerrado.answerTruco("quiero", true));
+  liberar(cerrado);
+
+  // 10e. Todo sin mano, que es lo primero que tries la pantalla.
+  const vacio = motor();
+  vacio.setFlor(true);
+  for (const [nombre, fn] of [
+    ["callTruco", () => vacio.callTruco(true)],
+    ["callTruco rival", () => vacio.callTruco(false)],
+    ["answerTruco", () => vacio.answerTruco("quiero", true)],
+    ["answerTruco rival", () => vacio.answerTruco("quiero", false)],
+    ["callFlor", () => vacio.callFlor(true, false)],
+    ["answerFlor", () => vacio.answerFlor("con-flor-quiero", 32, 33)],
+  ]) {
+    chequearMensaje(`${nombre}() sin mano`, fn);
+  }
+  // setFlor sí tiene que andar sin mano: es una preferencia de la pantalla.
+  correr("setFlor sin mano", () => vacio.setFlor(true));
+  correr("setFlor(false) sin mano", () => vacio.setFlor(false));
+  liberar(vacio);
+
+  liberar(t);
+  liberar(con);
 }
 
 // ---------------------------------------------------------------------------
