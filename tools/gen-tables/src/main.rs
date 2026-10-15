@@ -239,7 +239,7 @@ fn policy_checks(policy: &EnvidoPolicy) -> Vec<(&'static str, bool, String)> {
             .filter(|(a, _)| a.is_call())
             .map(|(_, p)| p)
             .sum();
-        let dominant = call_mass < 0.02 || call_mass > 0.98;
+        let dominant = !(0.02..=0.98).contains(&call_mass);
         abrupt &= dominant;
         detail.push(format!("{p_win:.2}:{call_mass:.2}"));
     }

@@ -230,6 +230,9 @@ pub struct ResponseAdvice {
     pub p_win_if_wanted: f64,
     /// Todas las opciones, de mayor a menor EV.
     pub options: Vec<ResponseOption>,
+    /// Con qué probabilidad real la respuesta recomendada deja al jugador sin la
+    /// partida. Cero si la secuencia no es una falta que la cierre.
+    pub risk_match: f64,
     pub reasons: Vec<String>,
 }
 
@@ -329,8 +332,33 @@ pub fn p_win_declared(&self, my_hand: Hand3, belief: &Belief) -> f64 {
 
     /// El EV de cantar una secuencia, declarando `declared`.
     ///
-    /// Si `is_bluff` es `true`, el tanto se descubre al mostrar: `p_win` se
-    /// fuerza a cero y lo único que queda es lo que se cobra por el no querer.
+    /// # La rama de perder
+    ///
+    /// La cuenta tiene TRES ramas y no dos:
+    ///
+    /// ```text
+    /// EV = P(acepta) · [ P(gano) · puntos − P(perdo) · costo_de_perder ]
+    ///     + (1 − P(acepta)) · lo_del_no_querer
+    /// ```
+    ///
+    /// Para el envido y el real envido, `costo_de_perder` es **cero**: perder el
+    /// canto es no ganar esos puntos, nada más. Por eso durante meses esta
+    /// función anduvo bien en esos cantos y el número cerraba.
+    ///
+    /// La falta envido en las malas es otra cosa: es el partido entero
+    /// (`scoring::falta_terms`). Perderla no es ganar cero, es quedarse sin la
+    /// partida. Y el bluff es el caso extremo de lo mismo: si te aceptan un
+    /// bluff de falta, perdiste la partida, y sin este término el bluff de la
+    /// falta salía con **exactamente el mismo EV** que el del envido, porque
+    /// `p_win` forzado a cero hacia desaparecer el factor `puntos` de la
+    /// ecuación entera.
+    ///
+    /// # Qué se cuenta como costo de perder
+    ///
+    /// Lo que el perdedor del canto se lleva, medido desde el marcador. Si el
+    /// canto cierra el partido, eso no son los puntos de la apuesta: es la
+    /// entirety de lo que faltaba para llegar al objetivo. Ver
+    /// [`Advisor::costo_de_perder_la_falta`].
     fn ev_of_call(
         &self,
         seq: EnvidoSeq,
@@ -342,7 +370,12 @@ pub fn p_win_declared(&self, my_hand: Hand3, belief: &Belief) -> f64 {
         let points = seq.points_if_accepted(Some(self.falta_value()));
         let declined = seq.points_if_declined();
         let effective_win = if is_bluff { 0.0 } else { p_win };
-        let ev = p_want * effective_win * points as f64 + (1.0 - p_want) * declined as f64;
+        // En la apertura, perder un canto NO resta puntos del marcador: el rival
+        // los suma y mi score queda igual. Por eso el costo base es cero y solo
+        // entra algo cuando lo que se pierde es la partida.
+        let costo = self.lo_que_perdo_de_la_partida(seq);
+        let ev = p_want * (effective_win * points as f64 - (1.0 - effective_win) * costo)
+            + (1.0 - p_want) * declined as f64;
         EnvidoOption {
             choice: call_for(seq),
             ev,
@@ -352,6 +385,91 @@ pub fn p_win_declared(&self, my_hand: Hand3, belief: &Belief) -> f64 {
             is_bluff,
             declared,
         }
+    }
+
+    /// `true` si perder esta secuencia de canto me deja sin la partida.
+    ///
+    /// Solo puede pasar con la falta envido y solo en las malas, que es el único
+    /// caso donde el perdedor del canto cierra el partido. Ver
+    /// [`scoring::falta_terms`].
+    pub fn el_canto_cierra_el_partido(&self, seq: EnvidoSeq) -> bool {
+        if !seq.is_falta() {
+            return false;
+        }
+        let terms = falta_terms(&self.config, &self.score);
+        terms.puntero_wins_match && terms.colista_wins_match
+    }
+
+    /// Con qué probabilidad real **responder** con esta opción deja al jugador
+    /// sin la partida.
+    ///
+    /// Es la misma pregunta que [`Advisor::riesgo_de_partido`] pero del lado de
+    /// responder un canto que ya está en la mesa. Acá importa más todavía: si el
+    /// rival cantó la falta, tu "quiero" no es una apuesta nueva, es aceptar
+    /// una que puede decidir la partida entera.
+    ///
+    /// `seq` es lo que hay cantado hasta ahora, y `subida` si la opción es
+    /// subir, porque ahí lo que decide es la secuencia nueva.
+    pub fn riesgo_de_partido_al_responder(
+        &self,
+        seq: EnvidoSeq,
+        p_win: f64,
+        p_me_aguantan: f64,
+        choice: &ResponseMove,
+        subida: Option<EnvidoSeq>,
+    ) -> f64 {
+        // "No quiero" nunca arriesga el partido: la mano se cierra y se sigue.
+        let me_aguantan = match choice {
+            ResponseMove::Quiero => 1.0,
+            ResponseMove::Subir(_) => p_me_aguantan,
+            ResponseMove::NoQuiero => 0.0,
+        };
+        if me_aguantan <= 0.0 {
+            return 0.0;
+        }
+        let secuencia_efectiva = subida.unwrap_or(seq);
+        if !self.el_canto_cierra_el_partido(secuencia_efectiva) {
+            return 0.0;
+        }
+        me_aguantan * (1.0 - p_win)
+    }
+
+    /// Con qué probabilidad real esta jugada me deja **sin la partida**.
+    ///
+    /// Es `P(me aceptan) · P(perdo el canto)`, y da cero para cualquier canto que
+    /// no cierre el partido. No hay que hacer ninguna cuenta rara: son las dos
+    /// probabilidades que el modelo ya tenia y que ya se muestran en pantalla.
+    ///
+    /// Sirve para no mentir con la etiqueta de confianza. Comparar EVs en puntos
+    /// alcanza para decir cual jugada es mejor, pero no alcanza para decir que
+    /// una jugada sea *buena*: con 33 la falta envido a 0-0 tiene EV +7 y te deja
+    /// sin partido el 2 % de las veces, que es una jugada excelente. Con 24 el
+    /// mismo canto tiene EV +3 y te deja sin partido el 14 %, que es otra cosa
+    /// entera aunque el EV sea positivo.
+    pub fn riesgo_de_partido(&self, opcion: &EnvidoOption) -> f64 {
+        let seq = seq_of(opcion.choice);
+        if !self.el_canto_cierra_el_partido(seq) {
+            return 0.0;
+        }
+        opcion.p_they_want * (1.0 - opcion.p_win_if_wanted)
+    }
+
+    /// Cuánto me cuesta perder la partida en vez de ganar los puntos del canto.
+    ///
+    /// Perder una mano normal no cuesta nada del marcador. Perder el partido sí:
+    /// te quedás sin todo lo que todavía faltaba para llegar al objetivo. Eso es
+    /// lo que un bluff de falta envido en las malas tiene que pagar, y lo que
+    /// antes valía cero.
+    ///
+    /// La asimetría hay que respetarla: a 28-2 la falta vale 2 puntos y NO cierra
+    /// la partida, así que el costo es el mismo 2 de cualquier otro canto. Recién
+    /// cuando la partida se decide de verdad el costo sube.
+    fn lo_que_perdo_de_la_partida(&self, seq: EnvidoSeq) -> f64 {
+        if !self.el_canto_cierra_el_partido(seq) {
+            return 0.0;
+        }
+        let mis_puntos = if self.score.a > self.score.b { self.score.a } else { self.score.b };
+        (self.config.target - mis_puntos) as f64
     }
 
     /// El mejor canto honesto para cada tipo, o `None` si no tengo par.
@@ -455,7 +573,10 @@ pub fn p_win_declared(&self, my_hand: Hand3, belief: &Belief) -> f64 {
         let confidence = if honestas == 0 {
             Confidence::BluffOnly
         } else if mejor_canto > 0.5 {
-            Confidence::Clear
+            match best {
+                Some(b) if self.riesgo_de_partido(b) > RIESGO_FIRME => Confidence::Mixed,
+                _ => Confidence::Clear,
+            }
         } else {
             Confidence::Mixed
         };
@@ -759,16 +880,24 @@ pub fn p_they_take_my_raise(&self, claimed: u8, belief: &Belief) -> f64 {
 }
 
 /// EV de aceptar un canto en juego.
-///
-/// **Acá faltaba la mitad del cálculo**: se contaba `p_win * puntos` pero no
-/// la rama en la que pierdo. Con eso todo salía positivo y el advisor
-/// recomendaba subir siempre, incluso con 5 de envido affirming 33.
-///
-/// Si gano el envido me llevo `puntos`; si lo pierdo, el rival se los lleva.
-/// El EV neto es `(2 * p_win - 1) * puntos`: negativo apenas es perdedor.
-fn ev_aceptar(p_win: f64, puntos: u32) -> f64 {
-    (2.0 * p_win - 1.0) * puntos as f64
-}
+    ///
+    /// **Acá faltaba la mitad del cálculo**: se contaba `p_win * puntos` pero no
+    /// la rama en la que pierdo. Con eso todo salía positivo y el advisor
+    /// recomendaba subir siempre, incluso con 5 de envido affirmando 33.
+    ///
+    /// Si gano el envido me llevo `puntos`; si lo pierdo, el rival se los lleva.
+    /// El EV neto es `(2 * p_win - 1) * puntos`: negativo apenas es perdedor.
+    ///
+    /// Ojo con la escala, que acá es distinta de la de la apertura. En la
+    /// apertura el cero es "no cantar", y perder un canto no te resta puntos del
+    /// marcador. Acá el cero es el centro, y las dos ramas están en la misma
+    /// moneda: **`puntos` es siempre el costo de perder**. Por eso el default no
+    /// es cero sino `puntos`. Lo único que cambia es si además de perder los
+    /// puntos perdés la partida.
+    fn ev_aceptar(&self, p_win: f64, puntos: u32, seq: EnvidoSeq) -> f64 {
+        let extra = self.lo_que_perdo_de_la_partida(seq);
+        p_win * puntos as f64 - (1.0 - p_win) * (puntos as f64 + extra)
+    }
 
 /// Qué hacer cuando el rival cantó: quiero, no quiero o subir.
     ///
@@ -811,7 +940,7 @@ fn ev_aceptar(p_win: f64, puntos: u32) -> f64 {
         let mut opciones = vec![
             ResponseOption {
                 choice: ResponseMove::Quiero,
-                ev: Self::ev_aceptar(p_win, aceptados),
+                ev: self.ev_aceptar(p_win, aceptados, seq),
                 equilibrium_mass: masa(crate::envido_solver::EnvidoAction::Accept),
                 points: aceptados,
             },
@@ -838,7 +967,7 @@ fn ev_aceptar(p_win: f64, puntos: u32) -> f64 {
             let afirmo = if call == EnvidoCall::FaltaEnvido { 28 } else { 31 };
             let p_me_aguantan = self.p_they_take_my_raise(afirmo, belief);
             let ev = (1.0 - p_me_aguantan) * se_achica
-                + p_me_aguantan * Self::ev_aceptar(p_win, puntos);
+                + p_me_aguantan * self.ev_aceptar(p_win, puntos, subida);
             opciones.push(ResponseOption {
                 choice: ResponseMove::Subir(call),
                 ev,
@@ -851,15 +980,49 @@ fn ev_aceptar(p_win: f64, puntos: u32) -> f64 {
 
         let top = opciones.first().map(|o| o.ev).unwrap_or(0.0);
         let second = opciones.get(1).map(|o| o.ev).unwrap_or(0.0);
-        let confidence = if top - second > 0.5 { Confidence::Clear } else { Confidence::Mixed };
-        let recommended =
-            opciones.first().map(|o| o.choice).unwrap_or(ResponseMove::NoQuiero);
+        let recomendado = opciones.first().map(|o| o.choice).unwrap_or(ResponseMove::NoQuiero);
+        // Mismo criterio que en la apertura: la confianza la manda el riesgo de
+        // perder la partida, no el tamaño del EV.
+        let riesgo_recomendada = opciones
+            .first()
+            .map(|o| {
+                let (subida, afirmo) = match o.choice {
+                    ResponseMove::Subir(call) => {
+                        let afirmo = if call == EnvidoCall::FaltaEnvido { 28 } else { 31 };
+                        (seq.can_elevate(call).then(|| seq.elevate(call)), afirmo)
+                    }
+                    _ => (None, 0),
+                };
+                self.riesgo_de_partido_al_responder(
+                    seq,
+                    p_win,
+                    if afirmo > 0 { self.p_they_take_my_raise(afirmo, belief) } else { 0.0 },
+                    &o.choice,
+                    subida,
+                )
+            })
+            .unwrap_or(0.0);
+        let confidence = if top - second > 0.5 && riesgo_recomendada <= RIESGO_FIRME {
+            Confidence::Clear
+        } else {
+            Confidence::Mixed
+        };
 
         let mut reasons = vec![format!(
             "cantaron {declared}: lo ganás el {:.0} % y te lo quieren el {:.0} %",
             p_win * 100.0,
             p_aceptan * 100.0
         )];
+        if riesgo_recomendada > 0.0 {
+            reasons.insert(
+                0,
+                format!(
+                    "Ojo: responder esto te deja sin la partida el {:.0} % de las veces. El EV de \
+                     abajo son puntos esperados, no la chance de que te quedes con algo.",
+                    riesgo_recomendada * 100.0
+                ),
+            );
+        }
         for o in opciones.iter().take(4) {
             let eq = if o.equilibrium_mass > 0.005 {
                 format!("el equilibrio le pone {:.0} %", o.equilibrium_mass * 100.0)
@@ -874,7 +1037,40 @@ fn ev_aceptar(p_win: f64, puntos: u32) -> f64 {
             ));
         }
 
-        ResponseAdvice { recommended, confidence, p_win_if_wanted: p_win, options: opciones, reasons }
+        ResponseAdvice {
+            recommended: recomendado,
+            confidence,
+            p_win_if_wanted: p_win,
+            options: opciones,
+            risk_match: riesgo_recomendada,
+            reasons,
+        }
+    }
+}
+
+/// La secuencia de cantos que corresponde a una acción.
+///
+/// Cubre tanto el primer canto (`E`, `R`, `F`) como las escaladas, que se
+/// nombran por el canto con el que terminan.
+/// Por encima de esta probabilidad de perder la partida, la confianza no dice
+/// "firme".
+///
+/// El número es una convención, no un óptimo: no hay un lugar del spectrum donde
+/// el riesgo deje de ser riesgo. Lo que fija es que "firme" tiene que significar
+/// "cantar esto es lo que hay que hacer", y eso deja de ser cierto cuando una
+/// de cada cuatro partidas se decide en una sola mano.
+const RIESGO_FIRME: f64 = 0.08;
+
+/// La secuencia de cantos que corresponde a un movimiento de apertura.
+///
+/// Es el camino inverso de [`call_for`], y hace falta para preguntar si una
+/// opción puede cerrar el partido.
+fn seq_of(move_: EnvidoMove) -> EnvidoSeq {
+    match move_ {
+        EnvidoMove::StaySilent => EnvidoSeq::Empty,
+        EnvidoMove::Call(EnvidoCall::Envido) => EnvidoSeq::E,
+        EnvidoMove::Call(EnvidoCall::RealEnvido) => EnvidoSeq::R,
+        EnvidoMove::Call(EnvidoCall::FaltaEnvido) => EnvidoSeq::F,
     }
 }
 

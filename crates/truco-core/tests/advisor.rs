@@ -10,6 +10,7 @@
 use std::sync::OnceLock;
 use truco_core::advisor::{Advisor, Confidence, EnvidoMove};
 use truco_core::belief::{BeliefState, Observation};
+use truco_core::bets::EnvidoSeq;
 use truco_core::envido_policy::EnvidoPolicy;
 use truco_core::opponent::OpponentModel;
 use truco_core::scoring::{MatchConfig, Score};
@@ -714,4 +715,240 @@ fn partida(my_hand: Hand3, mias: usize, suyas: usize) -> truco_core::advisor::Tr
 /// Una baza ganada por cualquiera de los dos.
 fn gane_una(my_hand: Hand3, gane_yo: bool) -> truco_core::advisor::TrickState {
     partida(my_hand, usize::from(gane_yo), usize::from(!gane_yo))
+}
+
+// ---------------------------------------------------------------------------
+// La apuesta que puede cerrar el partido
+//
+// # El error que estos tests cubren
+//
+// El EV de cantar se armaba como
+//
+//     p_want * p_win * puntos + (1 - p_want) * lo_del_no_querer
+//
+// o sea: **no hay ningun termino para "te aceptan y perdes"**. Eso es correcto
+// para el envido y el real envido, donde perder el canto es no ganar nada. Pero
+// la falta envido en las malas ES el partido entero (`scoring::falta_terms`), y
+// ahi perder no es ganar cero: es quedarse sin la partida.
+//
+// El caso mas claro es el bluff. Con `is_bluff` la `p_win` se fuerza a cero, y
+// entonces el termino `* puntos` desaparece: bluffear falta envido (30 en juego,
+// se pierde el partido) daba EXACTAMENTE el mismo EV que bluffear envido (2 en
+// juego). Que salieran empatados era de casualidad, del orden de iteracion del
+// `sort_by`, no del modelo.
+//
+// El solver de la Fase 3 no tiene este problema: `value_accept` pondera las dos
+// ramas y por eso su umbral sube con el tamano de la falta. El advisor es otro
+// camino al mismo numero, y es el que se leia en la pantalla.
+
+/// Una mano sin par: no puede cantar envido de verdad, solo bluffear.
+fn mano_sin_par() -> Hand3 {
+    hand(["4 de espada", "5 de copa", "3 de basto"])
+}
+
+/// El EV de una opcion concreta del consejo de apertura.
+fn ev_de_opcion(advice: &truco_core::advisor::EnvidoAdvice, choice: &str) -> Option<f64> {
+    advice.options.iter().find(|o| o.choice.label() == choice).map(|o| o.ev)
+}
+
+#[test]
+fn el_bluff_no_puede_valer_lo_mismo_a_2_que_a_30_puntos() {
+    let model = OpponentModel::neutral();
+    let advice = advisor(model, Score { a: 0, b: 0 }, true).envido_opening(
+        mano_sin_par(),
+        &belief_for(mano_sin_par(), true, model),
+    );
+
+    let bluff_envido = advice
+        .options
+        .iter()
+        .find(|o| o.is_bluff && o.declared >= 30 && o.points < 5)
+        .expect("tiene que haber un bluff de envido con tanto alto");
+    let bluff_falta = advice
+        .options
+        .iter()
+        .find(|o| o.is_bluff && o.points >= 30)
+        .expect("tiene que haber un bluff de falta envido con tanto alto");
+
+    assert_ne!(
+        bluff_envido.ev, bluff_falta.ev,
+        "bluffear a 2 puntos y bluffear a 30 dan el mismo EV: el tamano de la apuesta \
+         no esta entrando en el calculo ({})",
+        bluff_envido.ev
+    );
+    assert!(
+        bluff_falta.ev < bluff_envido.ev,
+        "bluffear la falta envido tiene que ser PEOR que bluffear el envido: si te aceptan \
+         perdes la partida y no dos puntos. dio {} contra {}",
+        bluff_falta.ev,
+        bluff_envido.ev
+    );
+}
+
+#[test]
+fn el_bluff_a_la_falta_cuesta_mas_que_el_bluff_al_envido() {
+    // Con la falta al aire a 0-0, el bluff de la falta tiene que pagar la
+    // partida: si te aceptan, perdiste. Que el EV siga siendo positivo NO es un
+    // bug: el modelo sigue optimizando puntos esperados, y 2 % de perder contra
+    // 98 % de cobrar un punto da +0,4. Lo que no puede pasar es que sea igual que
+    // el bluff del envido, que era el bug de verdad.
+    let model = OpponentModel::neutral();
+    let advice = advisor(model, Score { a: 0, b: 0 }, true).envido_opening(
+        mano_sin_par(),
+        &belief_for(mano_sin_par(), true, model),
+    );
+
+    let bluff_falta = advice
+        .options
+        .iter()
+        .find(|o| o.is_bluff && o.points >= 30)
+        .expect("tiene que haber un bluff de falta envido");
+    let bluff_envido = advice
+        .options
+        .iter()
+        .find(|o| o.is_bluff && o.points < 5)
+        .expect("tiene que haber un bluff de envido");
+
+    assert!(
+        bluff_falta.ev < bluff_envido.ev,
+        "bluffear la falta que cierra la partida tiene que ser estrictamente peor: \
+         diferencia {} contra {}",
+        bluff_falta.ev,
+        bluff_envido.ev
+    );
+}
+
+#[test]
+fn con_la_falta_chica_no_se_penaliza_nada() {
+    // A 28-2 la falta vale 2 puntos y NO cierra la partida para el que va atrás.
+    // Ahí no hay nada que penalizar, así que la falta tiene que valer
+    // EXACTAMENTE lo mismo que el envido. Es el control del otro extremo: si
+    // esto falla, la penalización se está aplicando de más.
+    let model = OpponentModel::neutral();
+    let mano = mano_33();
+    let adv = advisor(model, Score { a: 28, b: 2 }, true);
+    assert!(
+        !adv.el_canto_cierra_el_partido(EnvidoSeq::F),
+        "a 28-2 la falta no puede cerrar el partido"
+    );
+
+    let advice = adv.envido_opening(mano, &belief_for(mano, true, model));
+    let falta = ev_de_opcion(&advice, "falta envido").expect("esta la falta");
+    let envido = ev_de_opcion(&advice, "envido").expect("esta el envido");
+
+    assert_eq!(
+        falta, envido,
+        "cuando la falta no cierra la partida vale lo mismo que el envido: los dos \
+         están por 2 puntos y perder cualquiera de los dos cuesta lo mismo"
+    );
+}
+
+#[test]
+fn con_la_falta_grande_la_ventaja_sigue_existiendo() {
+    // A 25-0 la falta vale 5 puntos y tampoco cierra para el que va atrás. Acá sí
+    // hay algo que ganar: más puntos en juego por la misma probabilidad.
+    let model = OpponentModel::neutral();
+    let mano = mano_33();
+    let advice = advisor(model, Score { a: 25, b: 0 }, true)
+        .envido_opening(mano, &belief_for(mano, true, model));
+
+    let falta = ev_de_opcion(&advice, "falta envido").expect("esta la falta");
+    let envido = ev_de_opcion(&advice, "envido").expect("esta el envido");
+
+    assert!(
+        falta > envido,
+        "con 5 puntos en juego la falta tiene que seguir valiendo mas que el envido. \
+         dio {} contra {}",
+        falta,
+        envido
+    );
+}
+
+#[test]
+fn una_apertura_que_cierra_el_partido_no_puede_ser_la_claramente_mejor() {
+    // 24 a 0-0: el motor lo daba como "firme" con EV +7.97, contando perder la
+    // partida como si fuera no ganar nada. Con la penalizacion real el margen
+    // sobre el envido simple tiene que ser mucho menor.
+    let model = OpponentModel::neutral();
+    let mano = hand(["1 de espada", "3 de espada", "7 de oros"]); // 24
+    let advice = advisor(model, Score { a: 0, b: 0 }, true)
+        .envido_opening(mano, &belief_for(mano, true, model));
+
+    let falta = ev_de_opcion(&advice, "falta envido").expect("la falta esta entre las opciones");
+    let envido = ev_de_opcion(&advice, "envido").expect("el envido esta entre las opciones");
+
+    // El error de modelo es p_want * (1 - p_win) * puntos, y a 0-0 vale ~4.3
+    // puntos. Con la correccion, la diferencia tiene que ser menor que eso.
+    let error_actual = (falta - envido).abs();
+    assert!(
+        error_actual < 7.0,
+        "a 0-0, con la falta en juego, la diferencia entre falta y envido es demasiado \
+         grande: la rama de perder la partida no esta descontada. diferencia {}",
+        error_actual
+    );
+}
+
+#[test]
+fn en_las_malas_perder_la_falta_no_es_lo_mismo_que_no_ganar_nada() {
+    // Invariante del modelo, sin pasar por el advice: a 0-0 la falta vale el
+    // partido entero y perderla cierra el partido. Si alguna vez `falta_value`
+    // deja de dar 30 aca, el EV de la falta deja de tener sentido.
+    let terms = truco_core::scoring::falta_terms(&MatchConfig::to_30(), &Score { a: 0, b: 0 });
+    assert_eq!(terms.points, 30);
+    assert!(terms.puntero_wins_match, "quien gana la falta en las malas gana la partida");
+    assert!(terms.colista_wins_match, "tambien el que va atras: la falta decide la partida");
+}
+
+#[test]
+fn la_confianza_depende_del_riesgo_real_no_del_tamano_del_ev() {
+    // El EV mide puntos y no dice si una jugada es buena. Estas dos manos tienen
+    // el mismo tipo de recomendacion y riesgos de partido distintos:
+    //
+    //   33 a 0-0 -> falta envido, se pierde el partido el 2 % de las veces
+    //   24 a 0-0 -> falta envido, se pierde el partido el 14 % de las veces
+    //
+    // Con EV positivo en las dos, "firme" solo puede ser defendible en la
+    // primera. El numero que las separa es `riesgo_de_partido`, no el EV.
+    let model = OpponentModel::neutral();
+
+    let con_33 = mano_33();
+    let adv = advisor(model, Score { a: 0, b: 0 }, true);
+    let a33 = adv.envido_opening(con_33, &belief_for(con_33, true, model));
+    let r33 = a33
+        .options
+        .iter()
+        .find(|o| o.choice == a33.recommended)
+        .expect("hay una recomendada");
+    let pct_33 = adv.riesgo_de_partido(r33);
+
+    let con_24 = hand(["1 de espada", "3 de espada", "7 de oros"]);
+    let a24 = adv.envido_opening(con_24, &belief_for(con_24, true, model));
+    let r24 = a24
+        .options
+        .iter()
+        .find(|o| o.choice == a24.recommended)
+        .expect("hay una recomendada");
+    let pct_24 = adv.riesgo_de_partido(r24);
+
+    assert!(pct_33 < 0.08, "con 33 el riesgo tiene que ser bajo, dio {}", pct_33);
+    assert!(pct_24 > pct_33 * 3.0, "con 24 el riesgo tiene que ser mucho mayor: {} contra {}", pct_24, pct_33);
+
+    assert_eq!(a33.confidence, Confidence::Clear, "con 33 el consejo es firme: perds el 2 %");
+    assert_eq!(a24.confidence, Confidence::Mixed, "con 24 no puede decir 'firme': perdes el 14 %");
+}
+
+#[test]
+fn un_canto_que_no_cierra_el_partido_no_tiene_riesgo_de_partido() {
+    let model = OpponentModel::neutral();
+    let mano = mano_33();
+    let adv = advisor(model, Score { a: 25, b: 5 }, true);
+    let advice = adv.envido_opening(mano, &belief_for(mano, true, model));
+    for o in &advice.options {
+        assert_eq!(
+            adv.riesgo_de_partido(o),
+            0.0,
+            "{} no puede tener riesgo de partido: con alguno en buenas la falta no cierra",
+            o.choice.label()
+        );
+    }
 }
