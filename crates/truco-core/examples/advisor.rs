@@ -106,7 +106,7 @@ fn main() {
 
     println!("qué carta jugar:");
     let inicio = std::time::Instant::now();
-    let juego = advisor.best_play(mi_mano, None, 0, 0, &belief);
+    let juego = advisor.best_play(mi_mano, &truco_core::advisor::TrickState::new(), None, &belief);
     let consejo_ms = inicio.elapsed().as_millis();
 
     match juego.card {

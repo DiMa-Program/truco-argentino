@@ -45,6 +45,68 @@ use crate::scoring::{falta_terms, MatchConfig, Score};
 use crate::testutil::catalog_ref;
 use crate::trickplay;
 
+/// Una baza ya cerrada: qué giocamos cada uno y quién se la quedó.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Baza {
+    /// La carta que JUGUÉ yo.
+    pub mia: Card,
+    /// La carta que jugó el rival.
+    pub suya: Card,
+    /// `true` si la gané yo. Define quién guía la próxima.
+    pub gane: bool,
+}
+
+impl std::fmt::Display for Baza {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} vs {} ({})", self.mia, self.suya, if self.gane { "yo" } else { "él" })
+    }
+}
+
+/// El estado de la mano en el momento de la decisión.
+///
+/// Existe porque la belief guarda manos COMPLETAS de tres cartas: no tiene
+/// noción de qué salió ya. Sin esto el solver razona con cartas que nadie tiene
+/// más, y el error más visible era recomendarme jugar dos veces la misma.
+///
+/// Como `trucos.len()` ES el número de bazas jugadas, es imposible que el que
+/// llame diga "gané una" y siga con las tres: el estado se contradice solo.
+#[derive(Clone, Debug, Default)]
+pub struct TrickState {
+    /// Las bazas jugadas, en orden.
+    pub trucos: Vec<Baza>,
+}
+
+impl TrickState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Las cartas que ME quedan en la mano.
+    pub fn my_remaining(&self, hand: Hand3) -> Vec<Card> {
+        let jugadas: Vec<Card> = self.trucos.iter().map(|b| b.mia).collect();
+        hand.cards().iter().copied().filter(|c| !jugadas.contains(c)).collect()
+    }
+
+    /// Las cartas que le quedan al rival, si su mano fuera `hand`.
+    pub fn their_remaining(&self, hand: &[Card; 3]) -> Vec<Card> {
+        let jugadas: Vec<Card> = self.trucos.iter().map(|b| b.suya).collect();
+        hand.iter().copied().filter(|c| !jugadas.contains(c)).collect()
+    }
+
+    /// Mis bazas ganadas y las suyas.
+    pub fn score(&self) -> (usize, usize) {
+        let mias = self.trucos.iter().filter(|b| b.gane).count();
+        let suyas = self.trucos.len() - mias;
+        (mias, suyas)
+    }
+
+    /// Quién guía la baza siguiente: el que ganó la última, o el mano si es la
+    /// primera.
+    pub fn next_leader_is_me(&self, i_am_mano: bool) -> bool {
+        self.trucos.last().map(|b| b.gane).unwrap_or(i_am_mano)
+    }
+}
+
 /// Un `PlayAdvice` honesto: no hay nada que recomendar, y por qué.
 ///
 /// Sin esto devolvemos el argmax de una lista de ceros, que la UI presenta
@@ -427,16 +489,26 @@ pub fn p_win_declared(&self, my_hand: Hand3, belief: &Belief) -> f64 {
     /// Lo que hace aparecer el **no tirar más** sin escribir la regla a mano es
     /// que el solver ya sabe que el rival elige **qué carta sacrificar** cuando
     /// responde, y que con una baza ganada solo falta una.
-    pub fn best_play(
+/// Qué carta conviene jugar en la baza en curso.
+///
+/// `trucos` son las bazas YA CERRADAS. De ahí sale qué cartas me quedan, qué
+/// cartas le quedan al rival, cuántas bazas lleva cada uno y quién guía la
+/// próxima. Todo derivado de un solo sitio, así que no se puede pasar un
+/// estado que se contradiga.
+///
+/// La mano completa sigue haciendo falta, pero para otra cosa: la belief
+/// tiene que conocer las tres para bloquearlas del mazo del rival.
+pub fn best_play(
         &self,
         my_hand: Hand3,
+        trucos: &TrickState,
         lead_card: Option<Card>,
-        my_wins: usize,
-        their_wins: usize,
         belief: &Belief,
     ) -> PlayAdvice {
+        let remaining = trucos.my_remaining(my_hand);
+        let (my_wins, their_wins) = trucos.score();
         let mano = usize::from(self.i_am_mano);
-        let mine = my_hand.cards();
+        let mine = &remaining[..];
 
         // Una mano se cierra en la segunda baza. Si alguien ya tiene dos, no
         // queda nada que jugar: devolver una carta acá hacía que la app
@@ -455,11 +527,14 @@ pub fn p_win_declared(&self, my_hand: Hand3, belief: &Belief) -> f64 {
         // candidatas se descartaban, todas las probabilidades quedaban en 0 y
         // la app igualaba recomendar una. Ahora avisa.
         if let Some(lead) = lead_card {
-            if mine.contains(&lead) {
-                return sin_jugada(vec![format!(
-                    "{lead} está en tu mano, así que no puede ser la salida del rival"
-                )]);
-            }
+// Ojo: esto mira la mano COMPLETA, no la que me queda. Una carta que ya
+        // jugué sigue siendo mía para siempre: el rival no puede haberla
+        // guiada nunca.
+        if my_hand.cards().contains(&lead) {
+            return sin_jugada(vec![format!(
+                "{lead} está en tu mano, así que no puede ser la salida del rival"
+            )]);
+        }
         }
 
         // Las manos del rival colapsan por perfil de fuerza: el resultado de
@@ -480,53 +555,40 @@ pub fn p_win_declared(&self, my_hand: Hand3, belief: &Belief) -> f64 {
         // Si ME TOCA GUIAR, el resultado de la baza depende solo de las clases
         // de las tres cartas del rival, así que agrupo por `Profile3`: 7.770
         // candidatos se vuelven como mucho 589 evaluaciones del solver.
+        // Cada baza cerrada saca una carta de cada lado, así que ambos tienen
+        // exactamente el mismo número de cartas restantes. Eso no es una
+        // coincidencia: sale de que los dos juegan una por baza.
         //
-        // Si RESPONDO, la carta que salió es una carta concreta y hay que
-        // sacarla de la mano del rival antes de agrupar. Si se agrupara por
-        // `Profile3` y después se filtrara por carta, el filtro solo acertaría
-        // cuando la salida es justo la carta representativa de su clase: con
-        // cualquier otra carta se descartaban los 589 perfiles y el resultado
-        // era una lista de ceros. Por eso acá se agrupa por el perfil de las
-        // DOS cartas que quedan, que sí es un `Profile2` y hay pocos.
-        let evaluados: Vec<(Vec<Card>, f64)> = match lead_card {
-            None => {
-                let mut peso_por_perfil = vec![0.0f64; crate::profiles::all_profiles3().len()];
-                for (index, peso) in belief.iter_candidates() {
-                    let perfil = profile3_of(*catalog_ref()[index].cards());
-                    if let Some(p) = profile3_index(&perfil) {
-                        peso_por_perfil[p] += peso;
-                    }
-                }
-                crate::profiles::all_profiles3()
-                    .iter()
-                    .zip(peso_por_perfil.iter())
-                    .filter(|(_, peso)| **peso > 1e-12)
-                    .map(|(p, peso)| (p.iter().map(|c| trickplay::representative(*c)).collect(), *peso))
-                    .collect()
+        // Lo que importa para el solver es la clase de fuerza de las que le
+        // quedan al rival, no qué carta concreta es. Por eso agrupo por esas
+        // clases y los 7.770 candidatos colapsan en un puñado de grupos.
+        // Ojo con `lead_card`: la carta de la baza EN CURSO todavía no está en
+        // `trucos`, porque la baza no se cerró. Si estoy respondiendo, él ya la
+        // jugó y hay que sacarla de su mano igual. Sin esto el rival aparece con
+        // una carta de más y el agrupado se cae entero.
+        let actuales: Vec<Card> = lead_card.into_iter().collect();
+        // Si respondo la PRIMERA baza yo tengo tres y el dos: su carta ya esta en la mesa.
+        let esperadas = remaining.len() - actuales.len();
+        let mut peso_por_clases: std::collections::BTreeMap<Vec<u8>, f64> = Default::default();
+        for (index, peso) in belief.iter_candidates() {
+            let propias: Vec<u8> = trucos
+                .their_remaining(catalog_ref()[index].cards())
+                .into_iter()
+                .filter(|c| !actuales.contains(c))
+                .map(|c| c.strength())
+                .collect();
+            // Si le queda una carta más o menos que a mí, es una mano que no
+            // puede estar en esta posición del juego.
+            if propias.len() != esperadas {
+                continue;
             }
-            Some(lead) => {
-                let mut peso_por_perfil = vec![0.0f64; crate::profiles::all_profiles2().len()];
-                for (index, peso) in belief.iter_candidates() {
-                    let cartas = catalog_ref()[index].cards();
-                    // Las manos que no tienen la carta que salieron son
-                    // imposibles a la vista de la belief.
-                    let Some(pos) = cartas.iter().position(|c| *c == lead) else {
-                        continue;
-                    };
-                    let resto = [cartas[(pos + 1) % 3], cartas[(pos + 2) % 3]];
-                    let perfil = crate::profiles::profile2_of(resto);
-                    if let Some(p) = crate::profiles::profile2_index(&perfil) {
-                        peso_por_perfil[p] += peso;
-                    }
-                }
-                crate::profiles::all_profiles2()
-                    .iter()
-                    .zip(peso_por_perfil.iter())
-                    .filter(|(_, peso)| **peso > 1e-12)
-                    .map(|(p, peso)| (p.iter().map(|c| trickplay::representative(*c)).collect(), *peso))
-                    .collect()
-            }
-        };
+            *peso_por_clases.entry(propias).or_insert(0.0) += peso;
+        }
+        let evaluados: Vec<(Vec<Card>, f64)> = peso_por_clases
+            .into_iter()
+            .filter(|(_, peso)| *peso > 1e-12)
+            .map(|(clases, peso)| (clases.into_iter().map(trickplay::representative).collect(), peso))
+            .collect();
 
         for (theirs, peso) in &evaluados {
             let valores = match lead_card {

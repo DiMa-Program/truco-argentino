@@ -23,7 +23,7 @@
 //!   envido en la [`BeliefState`] y no en un `HandState`.
 //! - Flor y truco, más allá del aviso de que la flor es obligatoria.
 
-use crate::advisor::{Advisor, Confidence, EnvidoMove, ResponseMove};
+use crate::advisor::{Advisor, Baza as TrickStateBaza, Confidence, EnvidoMove, ResponseMove, TrickState};
 use crate::belief::{BeliefState, Observation};
 use crate::bets::{EnvidoCall, EnvidoSeq};
 use crate::cards::Card;
@@ -175,6 +175,8 @@ pub struct Truco {
     /// cinco cartas distintas. Guardando el hecho aparte y reconstruyendo, se
     /// puede cambiar de idea sin arrastrar nada.
     jugada: Option<(Card, bool)>,
+    /// Bazas ya cerradas: qué jugamos cada uno y quién las ganó.
+    trucos: TrickState,
     /// Bazas ya ganadas por cada uno. De acá sale el índice de la baza.
     bazas: (u8, u8),
 }
@@ -196,6 +198,7 @@ impl Truco {
             i_am_mano: true,
             declarado: None,
             jugada: None,
+            trucos: TrickState::new(),
             bazas: (0, 0),
         }
     }
@@ -268,7 +271,46 @@ impl Truco {
         Ok(())
     }
 
-    /// Registra la carta de la baza en curso.
+    /// Registra una baza ya cerrada.
+///
+/// `my_card` es la carta que jugaste, `their_card` la que jugó el rival, y `i_won`
+/// quién se la quedó. De acá salen todas las cosas que antes eran parámetros
+/// sueltos y se podían contradecir entre sí: qué cartas te quedan, cuántas
+/// bazas llevás y a quién le toca guiar.
+///
+/// Volver a llamar REEMPLAZA la última baza, no la agrega. Así se puede
+/// corregir sin que queden rastros.
+#[wasm_bindgen(js_name = recordTrick)]
+pub fn record_trick(&mut self, my_card: u8, their_card: u8, i_won: bool) -> Result<(), JsError> {
+        let mine = carta(my_card)?;
+        let suya = carta(their_card)?;
+        if mine == suya {
+            return Err(JsError::new("no pueden jugar la misma carta"));
+        }
+        let Some(hand) = self.my_hand else {
+            return Err(JsError::new("primero hay que setHand"));
+        };
+        if !hand.cards().contains(&mine) {
+            return Err(JsError::new(&format!("{mine} no está en tu mano")));
+        }
+        if self.trucos.trucos.iter().any(|b| b.mia == mine || b.suya == suya) {
+            return Err(JsError::new("esa carta ya se jugó"));
+        }
+        // No tiene que haber una baza más de las que quedan.
+        if self.trucos.trucos.len() >= crate::rules::BAZAS_PER_HAND {
+            return Err(JsError::new("la mano ya terminó"));
+        }
+        self.trucos.trucos.push(TrickStateBaza { mia: mine, suya, gane: i_won });
+        self.rebuild_belief();
+        Ok(())
+    }
+
+    /// Deshace la última baza registrada.
+    #[wasm_bindgen(js_name = undoTrick)]
+pub fn undo_trick(&mut self) {
+        self.trucos.trucos.pop();
+        self.rebuild_belief();
+    }
     ///
     /// `card` es `null` si todavía no salió ninguna: eso borra el registro. `he_leads`
     /// dice si la guiará el rival, y `my_wins`/`their_wins` cuántas bazas lleva cada
@@ -279,15 +321,7 @@ impl Truco {
     /// registrarlo, el consejo de "qué responder" se toma con menos
     /// información de la que tiene sobre la mesa.
     #[wasm_bindgen(js_name = observePlayedCard)]
-    pub fn observe_played_card(
-        &mut self,
-        card: Option<u8>,
-        he_leads: bool,
-        my_wins: u8,
-        their_wins: u8,
-    ) -> Result<(), JsError> {
-        let (mias, suyas) = avance(my_wins, their_wins)?;
-        self.bazas = (mias as u8, suyas as u8);
+    pub fn observe_played_card(&mut self, card: Option<u8>, he_leads: bool) -> Result<(), JsError> {
         self.jugada = card.map(carta).transpose()?.map(|c| (c, he_leads));
         if self.my_hand.is_some() {
             self.rebuild_belief();
@@ -344,21 +378,15 @@ impl Truco {
 ///
 /// `lead_card` es `null` si me toca guiar, o el índice de la carta que ya jugó
 /// el rival. `my_wins` y `their_wins` son las bazas ya decididas (0 o 1).
-#[wasm_bindgen(js_name = bestPlay)]
-    pub fn best_play(
-        &self,
-        lead_card: Option<u8>,
-        my_wins: u8,
-        their_wins: u8,
-    ) -> Result<String, JsError> {
+/// `remaining` son los índices de las cartas que todavía TENGO en la mano.
+    #[wasm_bindgen(js_name = bestPlay)]
+    pub fn best_play(&self, lead_card: Option<u8>) -> Result<String, JsError> {
         let (hand, state) = self.hand_and_state()?;
-        let (my_wins, their_wins) = avance(my_wins, their_wins)?;
         let lead_card = lead_card.map(carta).transpose()?;
         let policy = self.policy.as_ref().ok_or_else(|| JsError::new("falta la policy"))?;
         let belief = state.compute(&self.model);
         let advisor = Advisor { policy, model: self.model, config: self.config, score: self.score, i_am_mano: self.i_am_mano };
-        let advice =
-            advisor.best_play(hand, lead_card, my_wins, their_wins, &belief);
+        let advice = advisor.best_play(hand, &self.trucos, lead_card, &belief);
 
         let json = PlayJson {
             card: advice.card.map(|c| c.to_string()),
@@ -465,10 +493,11 @@ impl Truco {
 
     /// Reconstruye la belief desde cero con lo que se sabe de verdad.
     ///
-    /// Es lo que permite que la UI cambie de opinión: elegís una salida, te
-    /// arrepentís, elegís otra. Sin esto la `BeliefState` acumularía las dos y
-    /// creería que el rival joueó las dos cartas, que es peor que no saber
-    /// nada.
+    /// Reconstruye la belief desde cero con lo que se sabe de verdad.
+    ///
+    /// Dejarla acumular es lo que hacía imposible corregir: la UI es
+    /// explorativa, y si cada cambio se sumara la belief terminaría sabiendo
+    /// que el rival joueó cinco cartas distintas a la vez.
     fn rebuild_belief(&mut self) {
         let Some(hand) = self.my_hand else {
             self.state = None;
@@ -479,8 +508,32 @@ impl Truco {
             state.observe(Observation::CalledEnvido(true));
             state.observe(Observation::DeclaredEnvido(valor));
         }
+        // Cada baza cerrada es una observación sobre la carta que JUGÓ EL RIVAL.
+        //
+        // Solo la suya. Mis cartas no se observan contra la belief: la belief
+        // es la distribución sobre la mano DEL RIVAL, así que registrar mi
+        // carta le dice "esta mano no puede ser" a las 7.770 candidatas y la
+        // belief queda vacía. Mis cartas ya están bloqueadas por `setHand`.
+        let mut mias = 0usize;
+        let mut suyas = 0usize;
+        for (trick, b) in self.trucos.trucos.iter().enumerate() {
+            state.observe(Observation::PlayedCard {
+                card: b.suya,
+                ctx: PlayContext {
+                    table: [None, None],
+                    he_leads: true,
+                    trick,
+                    bazas: [mias, suyas],
+                },
+            });
+            if b.gane {
+                mias += 1;
+            } else {
+                suyas += 1;
+            }
+        }
+        // Y la carta de la baza en curso, que todavía no se cerró.
         if let Some((card, guio)) = self.jugada {
-            let (mias, suyas) = (self.bazas.0 as usize, self.bazas.1 as usize);
             state.observe(Observation::PlayedCard {
                 card,
                 ctx: PlayContext {

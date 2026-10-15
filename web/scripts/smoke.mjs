@@ -161,7 +161,7 @@ motor.setMano(true);
 motor.setHand(Uint8Array.from([6, 5, 22])); // 7e + 6e + 3c
 
 const t0 = process.hrtime.bigint();
-const juego = JSON.parse(motor.bestPlay(undefined, 0, 0));
+const juego = JSON.parse(motor.bestPlay(undefined));
 const ms = Number(process.hrtime.bigint() - t0) / 1e6;
 
 chequeo(juego.card !== null, "siempre recomienda una carta", `devolvió ${juego.card}`);
@@ -184,7 +184,7 @@ chequeo(juego.card === "6 de Espadas", "y la recomendación es efectivamente el 
 chequeo(ms < 100, `responde en menos de 100 ms (${ms.toFixed(1)} ms)`);
 
 // Responder a una salida también tiene que andar.
-const respondiendo = JSON.parse(motor.bestPlay(3, 0, 0)); // él guiaría con un 4 de oros
+const respondiendo = JSON.parse(motor.bestPlay(3)); // él guiaría con un 4 de oros
 chequeo(respondiendo.card !== null, "responder también devuelve carta");
 chequeo(
   respondiendo.alternatives.length === 3,

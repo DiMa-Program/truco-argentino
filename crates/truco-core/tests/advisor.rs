@@ -275,7 +275,7 @@ fn best_play_devuelve_una_carta_y_probabilidades_sanas() {
     let my_hand = mano_27();
     let model = OpponentModel::neutral();
     let belief = belief_for(my_hand, true, model);
-    let advice = advisor(model, Score { a: 0, b: 0 }, true).best_play(my_hand, None, 0, 0, &belief);
+    let advice = advisor(model, Score { a: 0, b: 0 }, true).best_play(my_hand, &truco_core::advisor::TrickState::new(), None, &belief);
 
     let card = advice.card.expect("siempre hay una carta que jugar");
     assert!(my_hand.contains(card), "tiene que ser una carta de mi mano: {card}");
@@ -291,7 +291,7 @@ fn las_alternativas_vienen_ordenadas() {
     let my_hand = mano_33();
     let model = OpponentModel::neutral();
     let belief = belief_for(my_hand, true, model);
-    let advice = advisor(model, Score { a: 0, b: 0 }, true).best_play(my_hand, None, 0, 0, &belief);
+    let advice = advisor(model, Score { a: 0, b: 0 }, true).best_play(my_hand, &truco_core::advisor::TrickState::new(), None, &belief);
 
     for pair in advice.alternatives.windows(2) {
         assert!(pair[0].1 >= pair[1].1, "ordenadas de mejor a peor: {pair:?}");
@@ -314,7 +314,7 @@ fn con_el_7_de_espadas_conviene_no_tirarlo_de_primera() {
     let my_hand = mano_33();
     let model = OpponentModel::neutral();
     let belief = belief_for(my_hand, true, model);
-    let advice = advisor(model, Score { a: 0, b: 0 }, true).best_play(my_hand, None, 0, 0, &belief);
+    let advice = advisor(model, Score { a: 0, b: 0 }, true).best_play(my_hand, &truco_core::advisor::TrickState::new(), None, &belief);
 
     let p_de = |nombre: &str| {
         advice
@@ -350,7 +350,7 @@ fn responder_devuelve_alternativas_validas() {
     let belief = belief_for(my_hand, true, model);
     let salida = truco_core::cards::parse_card("4 de oros").unwrap();
     let advice =
-        advisor(model, Score { a: 0, b: 0 }, true).best_play(my_hand, Some(salida), 0, 0, &belief);
+        advisor(model, Score { a: 0, b: 0 }, true).best_play(my_hand, &truco_core::advisor::TrickState::new(), Some(salida), &belief);
 
     let card = advice.card.expect("hay respuesta");
     assert!(my_hand.contains(card));
@@ -363,11 +363,64 @@ fn saber_las_bazas_marcadas_cambia_el_mensaje() {
     let my_hand = mano_33();
     let model = OpponentModel::neutral();
     let belief = belief_for(my_hand, true, model);
-    let arriba = advisor(model, Score { a: 0, b: 0 }, true).best_play(my_hand, None, 1, 0, &belief);
+    // Si ya gané una baza, me queda una carta menos. El estado tiene que ser
+    // coherente: no se puede haber ganado una baza y seguir teniendo las tres.
+    let arriba = advisor(model, Score { a: 0, b: 0 }, true)
+        .best_play(my_hand, &gane_una(my_hand, true), None, &belief);
+    assert!(arriba.card.is_some(), "con una baza ganada se sigue jugando");
     assert!(arriba.reasons.iter().any(|r| r.contains("solo necesitás una")));
 
-    let abajo = advisor(model, Score { a: 0, b: 0 }, true).best_play(my_hand, None, 0, 1, &belief);
+    let abajo = advisor(model, Score { a: 0, b: 0 }, true)
+        .best_play(my_hand, &gane_una(my_hand, false), None, &belief);
+    assert!(abajo.card.is_some());
     assert!(abajo.reasons.iter().any(|r| r.contains("si perdés esta")));
+}
+
+/// El estado sale de un solo sitio, así que no puede contradecirse.
+///
+/// Antes `best_play` recibía por separado la mano, las bazas ganadas y la
+/// salida, y era fácil pasarle "gané una baza" junto con las tres cartas: el
+/// solver razonaba con cartas que ya no existían y recomendaba jugar dos veces
+/// la misma. Ahora de `trucos.len()` salen las cartas que quedan, el marcador y
+/// quién guía. No hay forma de mentirse.
+#[test]
+fn el_estado_se_deriva_de_las_bazas_y_no_se_puede_contradecir() {
+    use truco_core::advisor::{Baza, TrickState};
+    let my_hand = mano_33();
+    let cartas = my_hand.cards();
+
+    let vacia = TrickState::new();
+    assert_eq!(vacia.my_remaining(my_hand).len(), 3, "sin bazas quedan tres");
+    assert_eq!(vacia.score(), (0, 0));
+    assert!(vacia.next_leader_is_me(true), "la primera guía el mano");
+
+    let una = TrickState { trucos: vec![Baza { mia: cartas[0], suya: cartas[1], gane: true }] };
+    let restan = una.my_remaining(my_hand);
+    assert_eq!(restan.len(), 2, "jugué una: me quedan dos");
+    assert!(!restan.contains(&cartas[0]), "la que jugué no puede volver");
+    assert_eq!(una.score(), (1, 0));
+    assert!(una.next_leader_is_me(false), "el que ganó la última guía");
+
+    let dos = TrickState {
+        trucos: vec![
+            Baza { mia: cartas[0], suya: cartas[1], gane: true },
+            Baza { mia: cartas[1], suya: cartas[2], gane: true },
+        ],
+    };
+    assert_eq!(dos.my_remaining(my_hand).len(), 1, "jugué dos: me queda una");
+    assert_eq!(dos.score(), (2, 0));
+}
+
+/// Si ya no me queda ninguna carta, no hay consejo que dar.
+#[test]
+fn sin_cartas_no_hay_que_jugar() {
+    let my_hand = mano_33();
+    let model = OpponentModel::neutral();
+    let belief = belief_for(my_hand, true, model);
+    let adv = advisor(model, Score { a: 0, b: 0 }, true);
+
+    let r = adv.best_play(my_hand, &partida(my_hand, 2, 1), None, &belief);
+    assert!(r.card.is_none(), "> dos bazas ganadas la mano ya termino");
 }
 
 /// El promedio tiene que ser una probabilidad de verdad: si la belief dice que
@@ -377,7 +430,7 @@ fn la_confianza_nunca_es_uno_con_rival_desconocido() {
     let my_hand = mano_33();
     let model = OpponentModel::neutral();
     let belief = belief_for(my_hand, true, model);
-    let advice = advisor(model, Score { a: 0, b: 0 }, true).best_play(my_hand, None, 0, 0, &belief);
+    let advice = advisor(model, Score { a: 0, b: 0 }, true).best_play(my_hand, &truco_core::advisor::TrickState::new(), None, &belief);
 
     assert!(
         advice.win_prob < 0.999,
@@ -551,7 +604,7 @@ fn el_agrupado_por_perfil_da_lo_mismo_que_la_cuenta_ingenua() {
     // Cartas que NO son mías: mano_33 es 7e + 6e + 3c.
     for texto in ["4 de oros", "1 de bastos", "5 de copas", "1 de espada", "2 de bastos"] {
         let lead = truco_core::cards::parse_card(texto).unwrap();
-        let rapido = adv.best_play(my_hand, Some(lead), 0, 0, &belief);
+        let rapido = adv.best_play(my_hand, &truco_core::advisor::TrickState::new(), Some(lead), &belief);
         assert!(rapido.card.is_some(), "{texto}: el agrupado tiene que dar una carta");
 
         // Cuenta ingenua: cada candidato por separado, con sus cartas reales.
@@ -610,7 +663,7 @@ fn una_salida_imposible_no_inventa_una_recomendacion() {
     let belief = estado.compute(&model);
     let imposible = my_hand.cards()[0];
 
-    let r = adv.best_play(my_hand, Some(imposible), 0, 0, &belief);
+    let r = adv.best_play(my_hand, &truco_core::advisor::TrickState::new(), Some(imposible), &belief);
     assert!(r.card.is_none(), "una carta propia no puede ser la salida");
     assert!(
         r.reasons.iter().any(|x| x.contains("tu mano")),
@@ -628,11 +681,37 @@ fn con_la_mano_cerrada_no_hay_que_jugar() {
     let adv = advisor(model, Score { a: 0, b: 0 }, true);
 
     for (mias, suyas) in [(2, 0), (0, 2), (2, 2)] {
-        let r = adv.best_play(my_hand, None, mias, suyas, &belief);
+        // Cerrada la mano: si gané dos bazas, ya no me queda nada.
+        let r = adv.best_play(my_hand, &partida(my_hand, mias, suyas), None, &belief);
         assert!(r.card.is_none(), "bazas {mias}-{suyas}: la mano ya está");
-        assert!(!r.alternatives.is_empty() || r.card.is_none());
+        assert!(r.alternatives.is_empty());
     }
-    // Y con la mano viva sigue habiendo carta.
-    let viva = adv.best_play(my_hand, None, 1, 1, &belief);
+    // A 1-1 falta una baza: me queda una carta y hay que jugarla.
+    let viva = adv.best_play(my_hand, &partida(my_hand, 1, 1), None, &belief);
     assert!(viva.card.is_some(), "a 1-1 falta una baza: hay que jugar");
+}
+/// Arma el historial de bazas: yo gané `mias` seguidas y él ganó `suyas`.
+/// Las cartas concretas no son las que importa acá, sino el largo.
+fn partida(my_hand: Hand3, mias: usize, suyas: usize) -> truco_core::advisor::TrickState {
+    use truco_core::advisor::{Baza, TrickState};
+    // La carta del rival tiene que ser UNA QUE NO ES MIA: si el filtrado por
+    // cartas ya jugadas recibe una carta que ninguna mano candidata tiene,
+    // descarta todas y el agrupado se cae entero. Por eso se toman del mazo
+    // entero, filtrando las mías.
+    let mio = my_hand.cards().to_vec();
+    let suyo: Vec<truco_core::cards::Card> = (0..40u8)
+        .map(truco_core::cards::Card::from_index)
+        .filter(|c| !mio.contains(c))
+        .take(mias + suyas)
+        .collect();
+    let mut trucos = Vec::new();
+    for i in 0..mias + suyas {
+        let mia = mio[i % 3];
+        trucos.push(Baza { mia, suya: suyo[i], gane: i < mias });
+    }
+    TrickState { trucos }
+}
+/// Una baza ganada por cualquiera de los dos.
+fn gane_una(my_hand: Hand3, gane_yo: bool) -> truco_core::advisor::TrickState {
+    partida(my_hand, usize::from(gane_yo), usize::from(!gane_yo))
 }

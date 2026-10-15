@@ -221,6 +221,15 @@ section {
 
 /* --- Observaciones ----------------------------------------------------- */
 
+/* Marcar qué cartas ya gasté. */
+.fila-jugadas {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin: 0.4rem 0;
+}
+
 /* Secuencia de cantos y botones de canto. */
 .secuencia {
   display: flex;

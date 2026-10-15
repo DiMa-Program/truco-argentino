@@ -77,13 +77,10 @@ interface TrucoWasm {
   setModel(index: number): void;
   setMano(iAmMano: boolean): void;
   observeDeclared(value: number): void;
-  observePlayedCard(
-    card: number | undefined,
-    heLeads: boolean,
-    myWins: number,
-    theirWins: number,
-  ): void;
-  bestPlay(leadCard: number | undefined, myWins: number, theirWins: number): string;
+  observePlayedCard(card: number | undefined, heLeads: boolean): void;
+  bestPlay(leadCard: number | undefined): string;
+  recordTrick(myCard: number, theirCard: number, iWon: boolean): void;
+  undoTrick(): void;
   responseAdvice(seq: string, declared: number): string;
   isReady(): boolean;
   snapshot(): string;
@@ -159,13 +156,8 @@ export class Engine {
    * cambio, así que se puede cambiar de carta sin arrastrar la anterior: si
    * no, la belief acabaría creyendo que el rival jugó todas las que probaste.
    */
-  observePlayedCard(
-    card: number | undefined,
-    heLeads: boolean,
-    myWins: number,
-    theirWins: number,
-  ): void {
-    this.#requiere().observePlayedCard(card, heLeads, myWins, theirWins);
+  observePlayedCard(card: number | undefined, heLeads: boolean): void {
+    this.#requiere().observePlayedCard(card, heLeads);
   }
 
   get snapshot(): Snapshot {
@@ -176,11 +168,40 @@ export class Engine {
     return JSON.parse(this.#requiere().advice()) as Advice;
   }
 
-  /** Qué carta jugar. `leadCard` es `undefined` si me toca guiar. */
-  bestPlay(leadCard: number | undefined, myWins: number, theirWins: number): PlayAdvice {
-    return JSON.parse(
-      this.#requiere().bestPlay(leadCard, myWins, theirWins),
-    ) as PlayAdvice;
+  /**
+   * Qué carta jugar en la baza en curso.
+   *
+   * `leadCard` es la carta que puso el rival en esta baza; `undefined` si me
+   * toca salir a mí.
+   *
+   * No recibe ni el marcador ni las cartas que me quedan: de eso se encarga el
+   * historial que se le cargó con `recordTrick`. Pedirlo por separado era lo que
+   * permitía pasarle un estado que se contradecía solo, y ahí el motor
+   * recomendaba jugar dos veces la misma carta.
+   */
+  bestPlay(leadCard: number | undefined): PlayAdvice {
+    return JSON.parse(this.#requiere().bestPlay(leadCard)) as PlayAdvice;
+  }
+
+  /** Registra una baza cerrada: qué jugamos cada uno y quién la ganó. */
+  recordTrick(myCard: number, theirCard: number, iWon: boolean): void {
+    this.#requiere().recordTrick(myCard, theirCard, iWon);
+  }
+
+  /** Deshace la última baza, para corregir un error. */
+  undoTrick(): void {
+    this.#requiere().undoTrick();
+  }
+  /** Cierra el motor y libera su memoria. */
+  dispose(): void {
+    if (!this.#truco) return;
+    try {
+      this.#truco.free();
+    } catch {
+      // Si ya estaba liberado o nunca se terminó de cargar, no hay nada que
+      // hacer. Liberar es una limpieza: no puede romper la sesión.
+    }
+    this.#truco = null;
   }
 
   /**

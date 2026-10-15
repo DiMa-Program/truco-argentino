@@ -65,14 +65,27 @@ const estado = {
   respondiendo: false,
   /** Carta con la que guió el rival, cuando estoy respondiendo. */
   cartaRival: undefined as number | undefined,
-  bazasMias: 0,
-  bazasSuyas: 0,
+  /**
+   * Las bazas ya cerradas, en orden: qué jugué, qué jugó él y quién ganó.
+   *
+   * Antes había contadores sueltos (mis bazas, sus bazas, cartas jugadas) y
+   * podían contradecirse: se podía marcar "gané una" con las tres cartas en la
+   * mano, y el motor recomendaba jugar la misma carta dos veces. De acá salen
+   * todas las cosas, así que no hay forma de mentirse.
+   */
+  bazas: [] as { mia: number; suya: number; gane: boolean }[],
 };
 
 const app = document.querySelector<HTMLDivElement>("#cuerpo")!;
 const estadoCarga = document.querySelector<HTMLSpanElement>("#estado-carga")!;
 
 const motor = new Engine();
+
+// El motor es un bloque de memoria de un par de megas para siempre. Si el
+// usuario cierra la app o recarga, se queda flotando sin que nadie lo libere.
+// `pagehide` es el evento que dispara también cuando el navegador decide
+// descargas la pestaña, que es justo cuando no hay otra oportunidad.
+window.addEventListener("pagehide", () => motor.dispose());
 
 async function arrancar(): Promise<void> {
   try {
@@ -477,29 +490,30 @@ function seccionJuego(listo: boolean, deck: CardInfo[]): HTMLElement {
     return caja;
   }
 
-  caja.append(selectorTurno(deck), filaMarcadorBazas());
+  caja.append(selectorTurno(deck));
 
   const salida = estado.respondiendo ? estado.cartaRival : undefined;
-  if (salida !== undefined) {
-    const carta = deck[salida];
+  if (estado.cartaRival !== undefined) {
+    const carta = deck[estado.cartaRival];
     if (carta) {
       const info = motor.listo && estado.mano.length === 3 ? motor.snapshot : null;
       caja.append(
         el(
           "p",
           "nota-belief",
-          info
-            ? `El rival guiaría con ${carta.name}. Eso deja ${info.belief_size} manos posibles.`
-            : `El rival guiaría con ${carta.name}.`,
+          (estado.respondiendo ? "El rival guiaría con " : "El rival contestó con ") +
+            carta.name +
+            (info ? `. Eso deja ${info.belief_size} manos posibles.` : "."),
         ),
       );
     }
   }
+  caja.append(filaCerrarBaza(deck));
 
   let consejo: PlayAdvice;
   const inicio = performance.now();
   try {
-    consejo = motor.bestPlay(salida, estado.bazasMias, estado.bazasSuyas);
+    consejo = motor.bestPlay(salida);
   } catch (error) {
     caja.append(aviso(`No se pudo calcular: ${(error as Error).message}`, "error"));
     return caja;
@@ -541,16 +555,82 @@ function seccionJuego(listo: boolean, deck: CardInfo[]): HTMLElement {
   return caja;
 }
 
+/**
+ * Una sola acción para todo lo que pasa al terminar una baza.
+ *
+ * Antes había tres controles sueltos: cuántas bazas gané, cuántas ganó él y
+ * qué cartas ya gasté. Se podían desincronizar entre sí. Ahora se cierra la
+ * baza de una vez con sus tres datos, y el motor deriva el resto: qué te queda
+ * en la mano, el marcador y a quién le toca salir.
+ */
+function filaCerrarBaza(deck: CardInfo[]): HTMLElement {
+  const fila = el("div", "fila-jugadas");
+  const restantes = cartasRestantes();
+  const marc = marcadorBazas();
+
+  if (restantes.length === 0) {
+    fila.append(el("span", "nota-belief", "no te queda ninguna carta"));
+    return fila;
+  }
+
+  const cierre = (gane: boolean) => () => {
+    const suya = estado.cartaRival;
+    const mia = restantes[restantes.length - 1];
+    if (mia === undefined || suya === undefined) return;
+    estado.bazas.push({ mia, suya, gane });
+    try {
+      motor.recordTrick(mia, suya, gane);
+    } catch (error) {
+      estado.bazas.pop();
+      render();
+      avisoCerrarBaza(`No se pudo registrar la baza: ${(error as Error).message}`);
+      return;
+    }
+    estado.cartaRival = undefined;
+    avisarCartaJugada();
+    render();
+  };
+
+  fila.append(el("span", "quien", "Cerré la baza jugando"));
+  for (const indice of restantes) {
+    const carta = deck[indice];
+    if (!carta) continue;
+    fila.append(boton(carta.name, cierre(true), "chico"));
+  }
+  fila.append(el("span", "nota-belief", "gané"));
+  fila.append(boton("perdí", cierre(false), "chico"));
+
+  if (estado.bazas.length > 0) {
+    fila.append(
+      boton("deshacer", () => {
+        estado.bazas.pop();
+        motor.undoTrick();
+        avisarCartaJugada();
+        render();
+      }, "secundario chico"),
+    );
+  }
+  fila.append(
+    el("p", "nota-belief", `vas ${marc.mias} a ${marc.suyas}. Elige la carta del rival arriba y después tocá la tuya.`),
+  );
+  return fila;
+}
+
+/** Un error al cerrar una baza, sin romper la pantalla. */
+function avisoCerrarBaza(texto: string): void {
+  app.prepend(aviso(texto, "error"));
+}
 /** ¿Me toca guiar o responder, y con qué carta guió el rival si responde. */
 const selectorTurno = (deck: CardInfo[]): HTMLElement => {
   const fila = el("div", "fila-turno");
 
-  const guiar = boton("Me toca guiar", () => {
-    estado.respondiendo = false;
-    estado.cartaRival = undefined;
-    avisarCartaJugada();
-    render();
-  }, "chico" + (estado.respondiendo ? "" : " activo"));
+  // "Me toca guiar" ya no borra la carta del rival: pasa a ser SU respuesta, que
+    // también hay que registrar.
+    const guiar = boton("Me toca guiar", () => {
+      estado.respondiendo = false;
+      avisarCartaJugada();
+      render();
+    }, "chico" + (estado.respondiendo ? "" : " activo"));
 
   const responder = boton("Respondo", () => {
     estado.respondiendo = true;
@@ -588,37 +668,6 @@ const selectorTurno = (deck: CardInfo[]): HTMLElement => {
   return fila;
 }
 
-function filaMarcadorBazas(): HTMLElement {
-  const fila = el("div", "fila-puntos bazas");
-  const mover = (cuales: "mias" | "suyas", delta: number) => {
-    if (cuales === "mias") {
-      const nuevo = Math.max(0, Math.min(2, estado.bazasMias + delta));
-      // Tres bazas por mano y se cierra en la segunda: la suma nunca pasa de
-      // 2. Dejarla pasar metía a la app en un estado imposible y la rompía.
-      if (nuevo + estado.bazasSuyas > 2) return;
-      estado.bazasMias = nuevo;
-    } else {
-      const nuevo = Math.max(0, Math.min(2, estado.bazasSuyas + delta));
-      if (estado.bazasMias + nuevo > 2) return;
-      estado.bazasSuyas = nuevo;
-    }
-    avisarCartaJugada();
-    render();
-  };
-
-  fila.append(
-    el("span", "quien", "Bozas"),
-    boton("−", () => mover("mias", -1), "chico"),
-    el("strong", "puntos", String(estado.bazasMias)),
-    boton("+", () => mover("mias", 1), "chico"),
-    el("span", "quien", "él"),
-    boton("−", () => mover("suyas", -1), "chico"),
-    el("strong", "puntos", String(estado.bazasSuyas)),
-    boton("+", () => mover("suyas", 1), "chico"),
-  );
-  return fila;
-}
-
 // ---------------------------------------------------------------------------
 // Estado
 // ---------------------------------------------------------------------------
@@ -637,6 +686,7 @@ function alternarCarta(indice: number): void {
   // rompía la app entera. El smoke no lo veía porque siempre llama con tres.
   if (estado.mano.length === 3) {
     motor.setHand(estado.mano);
+    estado.bazas = [];
     avisarCartaJugada();
   }
   render();
@@ -647,27 +697,37 @@ function alternarCarta(indice: number): void {
  * por delante lo que ya sabíamos del rival. Hay que volver a cargarlo o la
  * pantalla prometería un consejoCONDICIONADO y daría el del prior.
  */
+/** Las cartas que todavía tengo: la mano menos las que ya jugué. */
+function cartasRestantes(): number[] {
+  const jugadas = estado.bazas.map((b) => b.mia);
+  return estado.mano.filter((c) => !jugadas.includes(c));
+}
+
+/** Mis bazas ganadas y las suyas, derivadas del historial. */
+function marcadorBazas(): { mias: number; suyas: number } {
+  const mias = estado.bazas.filter((b) => b.gane).length;
+  return { mias, suyas: estado.bazas.length - mias };
+}
+
 /**
  * Le dice al motor qué carta salió en la baza en curso.
  *
  * Esto no es cosmético: ver qué juega el rival es lo que más concentra la
- * belief. Si él tira el 7 de espada, la belief descarta de entrada todas las
- * manos que no lo tenían, y si lo tira perdiéndose, además dice que está
- * flojo. Sin esto el consejo de "qué responder" se tomaba a ciegas.
+ * belief. Si él tira un 2, la belief descarta las manos que tienen un 7 y
+ * además dice que no lo tiene.
  *
- * Se llama en cada cambio de la salida o del marcador de bazas. El motor
- * reconstruye la belief desde cero con lo que sabe, así que cambiar de mano,
- * cambiar el rol o cambiar la carta no arrastra lo anterior.
+ * Se reporta en las DOS direcciones: cuando él guía es su salida, y cuando
+ * yo guío es su respuesta. Antes solo se reportaba la salida, así que de la
+ * segunda baza en adelante el motor no se enteraba de nada cuando me tocaba
+ * salir.
+ *
+ * El motor reconstruye la belief desde cero con lo que sabe, así que cambiar
+ * de mano, de rol o de carta no arrastra nada de lo anterior.
  */
 function avisarCartaJugada(): void {
   if (!motor.listo || estado.mano.length !== 3) return;
   try {
-    motor.observePlayedCard(
-      estado.respondiendo ? estado.cartaRival : undefined,
-      estado.respondiendo,
-      estado.bazasMias,
-      estado.bazasSuyas,
-    );
+    motor.observePlayedCard(estado.cartaRival, estado.respondiendo);
   } catch {
     // Una combinación imposible no vale la pena romper la pantalla por eso:
     // la siguiente acción válida vuelve a sincronizar.
