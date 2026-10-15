@@ -1,0 +1,18 @@
+# Los finales de línea son LF en todo el repo, en todas las máquinas.
+#
+# Sin esto, cada Windows con `core.autocrlf=true` mete CRLF al editar y el
+# próximo diff se infla de N líneas reales a N miles sin cambiar una palabra.
+# Ya explotó dos veces en una sola sesión: el síntoma es que `git diff -w
+# --stat` da un número y `git diff --stat` da otro.
+#
+# `text=auto` deja que git detecte qué es binario y lo deje intacto;
+# `eol=lf` fuerza LF también en el working tree de Windows, que es donde
+# nacía el problema.
+* text=auto eol=lf
+
+# Las tablas precomputadas y el wasm son binarios. Hoy están gitignorados,
+# pero si alguno se versionara hay que declararlo explícito.
+*.bin binary
+*.wasm binary
+*.png binary
+*.ico binary
