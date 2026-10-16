@@ -83,26 +83,114 @@ section {
   color: var(--tenue);
 }
 
+/* --- Ronda ------------------------------------------------------------- */
+
+.ronda-info {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-bottom: 0.6rem;
+}
+
+.ronda-numero {
+  font-size: 0.85rem;
+  color: var(--tenue);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.ronda-rol {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
 /* --- Marcador ---------------------------------------------------------- */
 
 .fila-puntos {
   display: grid;
-  grid-template-columns: 1fr 3.2rem 3.2rem 3.2rem;
+  grid-template-columns: 3rem 2.4rem 3rem 2.4rem auto auto;
+  grid-template-areas:
+    "quien menos puntos mas zona mano"
+    "saltos saltos saltos saltos saltos saltos";
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.35rem;
+}
+
+.fila-puntos > .quien {
+  grid-area: quien;
+}
+.fila-puntos > .puntos {
+  grid-area: puntos;
+}
+.fila-puntos > .zona {
+  grid-area: zona;
+}
+.fila-puntos > .etiqueta-mano {
+  grid-area: mano;
 }
 
 .fila-puntos + .fila-puntos {
-  margin-top: 0.4rem;
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--borde);
 }
 
-.quien {
+/* El que es mano se ve de otro color: es la única información de la ronda que
+   cambia sola, así que tiene que saltar a la vista sin leer nada. */
+.fila-puntos .quien {
   font-size: 0.95rem;
+  color: var(--tenue);
+}
+
+.fila-puntos.soy-mano .quien {
+  color: var(--texto);
+  font-weight: 700;
 }
 
 .puntos {
   text-align: center;
-  font-size: 1.5rem;
+  font-size: 1.6rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.zona {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.1rem 0.35rem;
+  border-radius: 999px;
+  border: 1px solid var(--borde);
+  color: var(--tenue);
+  white-space: nowrap;
+}
+
+/* Las buenas son la mitad de la partida y el punto donde elenvido cambia de
+   reglas: la falta pasa a valer el partido entero. Por eso tienen color. */
+.zona.buenas {
+  color: var(--fondo);
+  background: var(--dorado);
+  border-color: var(--dorado);
+  font-weight: 700;
+}
+
+.etiqueta-mano {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--verde);
+  white-space: nowrap;
+}
+
+.fila-saltos {
+  grid-area: saltos;
+  display: flex;
+  gap: 0.3rem;
+  margin-top: 0.35rem;
+}
+
+.fila-saltos .boton {
+  flex: 1;
   font-variant-numeric: tabular-nums;
 }
 
@@ -164,6 +252,85 @@ section {
 }
 
 /* --- Grilla de cartas -------------------------------------------------- */
+
+/* --- Las cintas de la mano ---------------------------------------------- */
+
+/* Una cinta por palo. En vez de una grilla de 40 cartas que hay que scrollear
+   para encontrar una, son cuatro listas de diez: una por palo, y las cuatro se
+   ven sin scroll en un teléfono. */
+.linea-cinta {
+  display: grid;
+  grid-template-columns: 5.5rem 1fr;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.15rem 0;
+}
+
+.linea-cinta + .linea-cinta {
+  border-top: 1px solid var(--borde);
+}
+
+.palo-nombre {
+  font-size: 0.8rem;
+  color: var(--tenue);
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.cinta {
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 0.2rem;
+}
+
+.carta-mini {
+  min-width: 0;
+  padding: 0.4rem 0;
+  background: var(--panel-alto);
+  border: 1px solid var(--borde);
+  border-radius: 7px;
+  color: var(--texto);
+  cursor: pointer;
+  font: inherit;
+  /* Que el objetivo sea comodo con el dedo: 44px es el minimo recomendado y en
+     esta fila se llega sin esfuerzo. */
+  min-height: 2.4rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.carta-mini:active {
+  background: #333333;
+}
+
+.carta-mini.elegida {
+  background: var(--dorado);
+  border-color: var(--dorado);
+  color: var(--fondo);
+  font-weight: 700;
+}
+
+/* Lo que ya elegiste, reunido arriba de las cuatro cintas. Es la lectura
+   instantanea de la mano sin tener que mirar las cuatro filas. */
+.mis-cartas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  min-height: 1.6rem;
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px dashed var(--borde);
+}
+
+.carta-elegida {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--dorado);
+  font-variant-numeric: tabular-nums;
+}
 
 .grilla {
   display: grid;
@@ -451,5 +618,52 @@ section {
 @media (min-width: 30rem) {
   .grilla {
     grid-template-columns: repeat(8, 1fr);
+  }
+}
+
+/* Teléfonos angostos.
+   Las cintas son diez cartas por palo. En 320 px entran justas si el nombre del
+   palo se achica; lo que no entra bien es el marcador con seis columnas, así
+   que ahí la zona y la etiqueta de mano bajan a su propia línea. */
+@media (max-width: 26rem) {
+  .linea-cinta {
+    grid-template-columns: 3.4rem 1fr;
+    gap: 0.3rem;
+  }
+
+  .palo-nombre {
+    font-size: 0.7rem;
+  }
+
+  .cinta {
+    gap: 0.15rem;
+  }
+
+  .carta-mini {
+    min-height: 2.2rem;
+    padding: 0.3rem 0;
+  }
+
+  .carta-mini .carta-numero {
+    font-size: 0.85rem;
+  }
+
+  .fila-puntos {
+    grid-template-columns: 2.6rem 2.2rem 2.8rem 2.2rem;
+    grid-template-areas:
+      "quien menos puntos mas"
+      "zona zona zona zona"
+      "mano mano mano mano"
+      "saltos saltos saltos saltos";
+  }
+
+  .puntos {
+    font-size: 1.4rem;
+  }
+
+  .zona,
+  .etiqueta-mano {
+    justify-self: start;
+    margin-top: 0.2rem;
   }
 }

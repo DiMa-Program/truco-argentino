@@ -90,6 +90,23 @@ const estado = {
    * probabilidad para decidir si ofrecer el envite de flores.
    */
   florRival: null as number | null,
+  /**
+   * Rondas jugadas en esta partida.
+   *
+   * Es lo que hace que la mano se alterne sola. El mano reparte en las rondas
+   * impares y el otro en las pares, así que con el número de ronda alcanza: no
+   * hace falta que nadie apriete un botón para cambiar de rol.
+   */
+  ronda: 1,
+  /**
+   * Si la ronda actual ya se terminó de jugar.
+   *
+   * Mientras es `false`, la carta que toques va a la ronda en curso. Recién al
+   * cerrar la ronda los puntos se suman al marcador. Esa separación es la que
+   * hace que el puntaje se pueda llevar solo: el motor nunca ve un marcador que
+   * todavía puede volver atrás.
+   */
+  rondaCerrada: false,
 };
 
 const app = document.querySelector<HTMLDivElement>("#cuerpo")!;
@@ -138,6 +155,7 @@ function render(): void {
   app.innerHTML = "";
 
   app.append(
+    seccionRonda(),
     seccionMarcador(),
     seccionConfig(),
     seccionMano(deck, listo),
@@ -149,16 +167,94 @@ function render(): void {
   );
 }
 
+/**
+ * La ronda: dónde estamos y quién cierra.
+ *
+ * Es la pieza que hace que el resto no tengas que administrarlo. El botón de
+ * cerrar hace tres cosas de una, y las tres importan:
+ *
+ *  1. **Suma los puntos** que gains por los cantos de la ronda. El motor ya
+ *     calculó cuántos valen; lo que hace falta es que vos confirmes que la
+ *     ronda terminó.
+ *  2. **Rota el rol**: el mano reparte en las rondas impares. Es la regla del
+ *     juego, no una preferencia, así que la pantalla la aplica sola.
+ *  3. **Limpia** la mano, las bazas y los cantos de envido de la ronda pasada.
+ *
+ * Sin esto había que cambiar el rol a mano cada ronda, y cada forgetting era
+ * un consejo calculado contra un estado que ya no existía.
+ */
+function seccionRonda(): HTMLElement {
+  const caja = section("ronda");
+
+  const info = el("div", "ronda-info");
+  const soyManoAhora = estado.ronda % 2 === 1;
+  info.append(
+    el("span", "ronda-numero", `ronda ${estado.ronda}`),
+    el("span", "ronda-rol", soyManoAhora ? "repartís vos" : "reparte él"),
+  );
+  caja.append(info);
+
+  if (estado.rondaCerrada) {
+    caja.append(
+      boton(
+        "empezar la ronda siguiente",
+        () => {
+          estado.ronda += 1;
+          estado.rondaCerrada = false;
+          estado.mano = [];
+          estado.bazas = [];
+          estado.cantos = [];
+          estado.declarado = null;
+          estado.cartaRival = undefined;
+          estado.respondiendo = false;
+          estado.florRival = null;
+          motor.setMano(estado.ronda % 2 === 1);
+          render();
+        },
+        "ancho",
+      ),
+    );
+    return caja;
+  }
+
+  caja.append(
+    boton(
+      "cerrar la ronda",
+      () => {
+        estado.rondaCerrada = true;
+        avisarCartaJugada();
+        render();
+      },
+      "secundario ancho",
+    ),
+  );
+  caja.append(
+    el("p", "nota-belief", "Tocá el +1 / +2 / +3 / +4 de arriba para anotar lo que cantó cada uno."),
+  );
+  return caja;
+}
+
+/**
+ * El marcador.
+ *
+ * La idea es que **no tengas que llevar la cuenta**: vos avisás qué pasó en la
+ * mesa y la pantalla acomoda. Por eso los puntos se anotan con un botón por
+ * valor (−1 / +1 / +2 / +3 / +4) en lugar de un stepper de uno en uno, y por
+ * eso la fila muestra en qué zona está cada uno (las malas y las buenas).
+ *
+ * El "quién" se resuelve solo por la ronda: el mano reparte en las impares. La
+ * etiqueta acompaña al número para que no tengas que pensar de quién es.
+ */
 function seccionMarcador(): HTMLElement {
   const caja = section("marcador");
 
   caja.append(
-    filaPuntos("Vos", estado.puntosMios, (delta) => {
+    filaPuntos("Vos", estado.puntosMios, estado.ronda % 2 === 1, (delta) => {
       estado.puntosMios = Math.max(0, Math.min(30, estado.puntosMios + delta));
       motor.setScore(estado.puntosMios, estado.puntosSuyos);
       render();
     }),
-    filaPuntos("Él", estado.puntosSuyos, (delta) => {
+    filaPuntos("Él", estado.puntosSuyos, estado.ronda % 2 === 0, (delta) => {
       estado.puntosSuyos = Math.max(0, Math.min(30, estado.puntosSuyos + delta));
       motor.setScore(estado.puntosMios, estado.puntosSuyos);
       render();
@@ -168,10 +264,22 @@ function seccionMarcador(): HTMLElement {
   return caja;
 }
 
-function filaPuntos(quien: string, valor: number, cambiar: (delta: number) => void): HTMLElement {
-  const fila = el("div", "fila-puntos");
-  const menos = boton("−", () => cambiar(-1));
-  const mas = boton("+", () => cambiar(+1));
+/**
+ * Una fila del marcador: nombre, valor, y los botones de puntaje.
+ *
+ * Los valores van de 1 a 4 porque son los únicos que un canto puede sumar en una
+ * ronda (envido 1, truco 1, con canto 2 a 4, envite de flor 4, falta envido
+ * variable). El `+` chico es para corregir de a uno cuando te pasaste.
+ */
+function filaPuntos(
+  quien: string,
+  valor: number,
+  esMano: boolean,
+  cambiar: (delta: number) => void,
+): HTMLElement {
+  const fila = el("div", `fila-puntos${esMano ? " soy-mano" : ""}`);
+  const menos = boton("−", () => cambiar(-1), "chico");
+  const mas = boton("+", () => cambiar(+1), "chico");
 
   fila.append(
     el("span", "quien", quien),
@@ -179,30 +287,71 @@ function filaPuntos(quien: string, valor: number, cambiar: (delta: number) => vo
     el("strong", "puntos", String(valor)),
     mas,
   );
+
+  // Los saltos grandes: son los que se usan de verdad.
+  const saltos = el("div", "fila-saltos");
+  for (const n of [2, 3, 4]) {
+    saltos.append(boton(`+${n}`, () => cambiar(n), "chico"));
+  }
+  fila.append(saltos);
+
+  // La zona. Las malas son los primeros 15 puntos y se cantan en voz alta: es
+  // el único momento de la partida donde el estado importa de verdad.
+  const zona = valor >= 15 ? "buenas" : "malas";
+  fila.append(el("span", `zona ${zona}`, zona));
+
+  if (esMano) {
+    fila.append(el("span", "etiqueta-mano", "mano"));
+  }
+
   return fila;
 }
 
 function seccionConfig(): HTMLElement {
   const caja = section("config");
 
+  // El rol NO se elige ronda por ronda: eso ya lo hace la ronda. Acá solo se
+  // declara QUIÉN abre la partida, y de ahí para adelante la pantalla alterna
+  // sola. Por eso no es un interruptor sino una elección entre dos, y por eso
+  // conviene que quede arriba de todo y no enterrada en la configuración.
   const selMano = document.createElement("input");
-  selMano.type = "checkbox";
+  selMano.type = "radio";
+  selMano.name = "quien-abre";
+  selMano.id = "abre-vos";
   selMano.checked = estado.soyMano;
-  selMano.className = "interruptor";
-  selMano.addEventListener("change", () => {
-    estado.soyMano = selMano.checked;
-    motor.setMano(estado.soyMano);
-    avisarCartaJugada();
-    render();
-  });
-  const etiquetaMano = el("label", "campo");
-  etiquetaMano.append(selMano, document.createTextNode(" soy el mano"));
-  etiquetaMano.addEventListener("click", (evento) => {
-    if (evento.target !== selMano) {
-      selMano.checked = !selMano.checked;
-      selMano.dispatchEvent(new Event("change"));
+  const selOtro = document.createElement("input");
+  selOtro.type = "radio";
+  selOtro.name = "quien-abre";
+  selOtro.id = "abre-otro";
+  selOtro.checked = !estado.soyMano;
+
+  const aplicar = () => {
+    const abreVos = selMano.checked;
+    if (abreVos !== estado.soyMano) {
+      estado.soyMano = abreVos;
+      motor.setMano(abreVos);
+      avisarCartaJugada();
+      render();
     }
-  });
+  };
+  selMano.addEventListener("change", aplicar);
+  selOtro.addEventListener("change", aplicar);
+
+  const etiquetaMano = el("label", "campo");
+  etiquetaMano.append(
+    selMano,
+    el("span", "", " abre la partida"),
+  );
+  const etiquetaOtro = el("label", "campo");
+  etiquetaOtro.append(
+    selOtro,
+    el("span", "", " abre él"),
+  );
+  caja.append(el("h2", "titulo-seccion", "Quién abre"));
+  caja.append(etiquetaMano, etiquetaOtro);
+  caja.append(
+    el("p", "nota-belief", "Después de eso se alterna solo en cada ronda."),
+  );
 
   const selModelo = document.createElement("select");
   selModelo.className = "selector";
@@ -225,39 +374,93 @@ function seccionConfig(): HTMLElement {
   return caja;
 }
 
+/**
+ * Los palos en el orden en que se muestran.
+ *
+ * Espada arriba porque es la que más se mira: el 1 y el 7 de espada son las dos
+ * cartas más fuertes del mazo y son las que definen casi todas las decisiones de
+ * la primera baza.
+ */
+const PALOS = [
+  { indice: 0, nombre: "Espada", simbolo: "⚔" },
+  { indice: 2, nombre: "Copa", simbolo: "🏆" },
+  { indice: 1, nombre: "Basto", simbolo: "♣" },
+  { indice: 3, nombre: "Oro", simbolo: "♦" },
+];
+
+/**
+ * Tu mano, como cuatro cintas: una por palo.
+ *
+ * Antes era una grilla de 40 cartas, que en el teléfono obligaba a scrollear
+ * mucho para encontrar una sola. Con una cinta por palo la mano se arma
+ * recorriendo cuatro listas cortas, y cada lista es solo lo que tenés de ese
+ * palo.
+ *
+ * Se pueden elegir hasta tres cartas en total, de cualquier palo: en el truco
+ * se pueden tener dos del mismo palo, así que la cinta no fuerza uno por palo.
+ * La selección se lee de un vistazo porque la carta elegida queda arriba, en la
+ * fila de "tu mano".
+ */
 function seccionMano(deck: CardInfo[], listo: boolean): HTMLElement {
   const caja = section("mano");
 
-  const titulo = el("h2", "titulo-seccion", "Tu mano");
-  const resumen = el("p", "resumen-mano", resumenMano());
-  caja.append(titulo, resumen);
+  caja.append(el("h2", "titulo-seccion", "Tu mano"), el("p", "resumen-mano", resumenMano()));
 
-  const grilla = el("div", "grilla");
-  for (const carta of deck) {
-    const elegida = estado.mano.includes(carta.index);
-    const { numero, palo } = partes(carta);
-    const botonCarta = el("button", `carta${elegida ? " elegida" : ""}`);
-    botonCarta.type = "button";
-    botonCarta.setAttribute("aria-pressed", String(elegida));
-    botonCarta.append(el("span", "carta-numero", numero), el("span", "carta-palo", palo));
-    botonCarta.addEventListener("click", () => alternarCarta(carta.index));
-    grilla.append(botonCarta);
+  const elegidos = el("div", "mis-cartas");
+  for (const palo of PALOS) {
+    const linea = el("div", "linea-cinta");
+    const nombreCinta = el("span", "palo-nombre", `${palo.simbolo} ${palo.nombre}`);
+    linea.append(nombreCinta);
+
+    const cinta = el("div", "cinta");
+    // Las cartas de ese palo, en el orden del mazo: 1 a 7 y las tres figuras.
+    for (let rank = 0; rank < 10; rank++) {
+      const indice = palo.indice * 10 + rank;
+      const carta = deck[indice];
+      if (!carta) continue;
+      const elegida = estado.mano.includes(indice);
+      const botonCarta = el("button", `carta-mini${elegida ? " elegida" : ""}`);
+      botonCarta.type = "button";
+      botonCarta.setAttribute("aria-pressed", String(elegida));
+      botonCarta.setAttribute("aria-label", carta.name);
+      const { numero } = partes(carta);
+      botonCarta.append(el("span", "carta-numero", numero));
+      botonCarta.addEventListener("click", () => alternarCarta(indice));
+      cinta.append(botonCarta);
+    }
+    linea.append(cinta);
+    caja.append(linea);
+
+    // Lo que ya elegiste de este palo, al lado del nombre.
+    const miasDeEstePalo = estado.mano.filter((i) => Math.floor(i / 10) === palo.indice);
+    if (miasDeEstePalo.length > 0) {
+      elegidos.append(
+        el(
+          "span",
+          "carta-elegida",
+          miasDeEstePalo.map((i) => deck[i] ? partes(deck[i]).numero : "?").join(" "),
+        ),
+      );
+    }
   }
-  caja.append(grilla);
+  caja.append(elegidos);
 
   if (estado.mano.length > 0) {
-    const limpiar = boton("olvidar la mano", () => {
-      estado.mano = [];
-      render();
-    }, "secundario ancho");
-    caja.append(limpiar);
+    caja.append(
+      boton(
+        "olvidar la mano",
+        () => {
+          estado.mano = [];
+          render();
+        },
+        "secundario ancho",
+      ),
+    );
   }
 
   if (listo) {
     const info = motor.snapshot;
     if (info.has_flor && !estado.conFlor) {
-      // Con la flor apagada solo se avisa: es la forma de enterarte de que tenés
-      // una flor sin que la pantalla se ponga a cantar sola.
       caja.append(
         aviso(
           "Tenés flor. La pantalla tiene el canto de flor apagado; prendelo arriba si en tu mesa se canta.",
@@ -1054,20 +1257,24 @@ function avisarCartaJugada(): void {
   }
 }
 
+/**
+ * Una línea con la mano, el tanto y la flor.
+ *
+ * El tanto va con la etiqueta que se usa en la mesa: 33 es "viejita", y 32 o 31
+ * con figuras son IV. Es información que el motor ya tiene y que en la mesa se
+ * dice en voz alta, así que va acá.
+ */
 function resumenMano(): string {
-  if (estado.mano.length === 0) return "Tocá tres cartas.";
-  const partesTexto = estado.mano
-    .map((i) => {
-      const carta = motor.deck[i];
-      return carta ? carta.name : "?";
-    })
-    .join(" · ");
-  if (estado.mano.length < 3) return `${partesTexto} (${estado.mano.length}/3)`;
+  if (estado.mano.length === 0) return "Elegí una carta de cada palo que tengas.";
+  if (estado.mano.length < 3) {
+    return `Faltan ${3 - estado.mano.length} carta${estado.mano.length === 2 ? "" : "s"}.`;
+  }
   // `snapshot` necesita la mano cargada en el motor, y solo lo está con tres.
   const info = motor.snapshot;
   const tanto = info.my_envido;
   const par = tanto >= 20;
-  return `${partesTexto} · envido ${par ? tanto : "no tenés"} · flor ${info.has_flor ? "sí" : "no"}`;
+  const etiqueta = tanto >= 33 ? " (viejita)" : tanto >= 31 ? " (IV)" : "";
+  return `envido ${par ? `${tanto}${etiqueta}` : "no tenés"} · flor ${info.has_flor ? "sí" : "no"}`;
 }
 
 // ---------------------------------------------------------------------------
