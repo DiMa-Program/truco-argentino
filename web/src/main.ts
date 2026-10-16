@@ -18,6 +18,28 @@ import {
 
 const MODELOS = ["promedio", "novato", "pasivo", "agresivo", "tournament"];
 
+/**
+ * Una baza cerrada.
+ *
+ * `parda` va como campo propio y no implícito en un `gane` invertido porque son
+ * TRES estados y no dos: yo gané, él ganó, o nadie. Con un `gane: boolean` la
+ * parda no se podía registrar, y al no tener dónde anotarla contaba como baza
+ * del rival: mal el marcador, mal quién guía, y sin forma de saber el ganador de
+ * la ronda.
+ */
+type Baza = { mia: number; suya: number; gane: boolean; parda: boolean };
+
+/**
+ * Cómo terminó la baza, en los valores que espera el motor.
+ *
+ * Va como número y no como dos booleanos porque `no la gané yo` + `fue parda`
+ * juntos no significan nada y se pueden mandar por error. Con el número, una
+ * parda se registra como parda.
+ */
+const YO = 1;
+const EL = 0;
+const PARDA = 2;
+
 /** Cantos válidos, en el orden en que se pueden encadenar. */
 const CANTOS = ["envido", "real-envido", "falta-envido"] as const;
 
@@ -73,7 +95,14 @@ const estado = {
    * mano, y el motor recomendaba jugar la misma carta dos veces. De acá salen
    * todas las cosas, así que no hay forma de mentirse.
    */
-  bazas: [] as { mia: number; suya: number; gane: boolean }[],
+/**
+   * Las bazas de la ronda: qué jugamos cada uno y cómo terminó.
+   *
+   * `parda` es un campo propio y no un `gane` invertido porque son tres estados y
+   * no dos: yo gané, él ganó, o nadie. Con un `gane: boolean` la parda no se podía
+   * representar, y al no estar, contaba como baza del rival.
+   */
+  bazas: [] as Baza[],
   /**
    * Si se juega con flor.
    *
@@ -170,24 +199,35 @@ function render(): void {
 /**
  * La ronda: dónde estamos y quién cierra.
  *
- * Es la pieza que hace que el resto no tengas que administrarlo. El botón de
- * cerrar hace tres cosas de una, y las tres importan:
+ * El botón de cerrar hace tres cosas de una, y las tres importan:
  *
  *  1. **Suma los puntos** que gains por los cantos de la ronda. El motor ya
  *     calculó cuántos valen; lo que hace falta es que vos confirmes que la
  *     ronda terminó.
- *  2. **Rota el rol**: el mano reparte en las rondas impares. Es la regla del
- *     juego, no una preferencia, así que la pantalla la aplica sola.
+ *  2. **Rota el rol**: el que ganó la ronda es el mano de la siguiente. Es la
+ *     regla del truco, no una preferencia, así que la pantalla la aplica sola.
  *  3. **Limpia** la mano, las bazas y los cantos de envido de la ronda pasada.
  *
  * Sin esto había que cambiar el rol a mano cada ronda, y cada forgetting era
  * un consejo calculado contra un estado que ya no existía.
+ *
+ * # El rol NO sale de la paridad del número de ronda
+ *
+ * Antes sí, y era un bug: `ronda % 2` decidía el mano. La regla del truco es
+ * que **el ganador de la ronda reparte en la siguiente**, así que dos rondas
+ * seguidas las puede ganar el mismo. Como ese valor va al motor con
+ * `setMano`, el advisor repartía mal, y el orden de las cartas que recomendaba
+ * tiraba era de otro.
+ *
+ * Ahora sale de `roundWinner()`. Si el motor todavía no tiene ganador
+ * (porque la ronda se cerró antes de jugarse entera), se avisa en vez de
+ * adivinar: un mano inventado es peor que uno sin saber.
  */
 function seccionRonda(): HTMLElement {
   const caja = section("ronda");
 
   const info = el("div", "ronda-info");
-  const soyManoAhora = estado.ronda % 2 === 1;
+  const soyManoAhora = estado.soyMano;
   info.append(
     el("span", "ronda-numero", `ronda ${estado.ronda}`),
     el("span", "ronda-rol", soyManoAhora ? "repartís vos" : "reparte él"),
@@ -199,6 +239,11 @@ function seccionRonda(): HTMLElement {
       boton(
         "empezar la ronda siguiente",
         () => {
+          const ganador = motor.roundWinner();
+          if (ganador < 0) {
+            avisarRonda();
+            return;
+          }
           estado.ronda += 1;
           estado.rondaCerrada = false;
           estado.mano = [];
@@ -208,7 +253,8 @@ function seccionRonda(): HTMLElement {
           estado.cartaRival = undefined;
           estado.respondiendo = false;
           estado.florRival = null;
-          motor.setMano(estado.ronda % 2 === 1);
+          estado.soyMano = ganador === 1;
+          motor.setMano(estado.soyMano);
           render();
         },
         "ancho",
@@ -1096,13 +1142,13 @@ function filaCerrarBaza(deck: CardInfo[]): HTMLElement {
     return fila;
   }
 
-  const cierre = (gane: boolean) => () => {
+  const cierre = (resultado: number) => () => {
     const suya = estado.cartaRival;
     const mia = restantes[restantes.length - 1];
     if (mia === undefined || suya === undefined) return;
-    estado.bazas.push({ mia, suya, gane });
+    estado.bazas.push({ mia, suya, gane: resultado === YO, parda: resultado === PARDA });
     try {
-      motor.recordTrick(mia, suya, gane);
+      motor.recordTrick(mia, suya, resultado);
     } catch (error) {
       estado.bazas.pop();
       render();
@@ -1118,10 +1164,18 @@ function filaCerrarBaza(deck: CardInfo[]): HTMLElement {
   for (const indice of restantes) {
     const carta = deck[indice];
     if (!carta) continue;
-    fila.append(boton(carta.name, cierre(true), "chico"));
+    fila.append(boton(carta.name, cierre(YO), "chico"));
   }
   fila.append(el("span", "nota-belief", "gané"));
-  fila.append(boton("perdí", cierre(false), "chico"));
+  fila.append(boton("perdí", cierre(EL), "chico"));
+  fila.append(
+    boton(
+      "fue parda",
+      cierre(PARDA),
+      "chico parda",
+      "nadie se la llevó: sigue guiando el que la estaba guiando",
+    ),
+  );
 
   if (estado.bazas.length > 0) {
     fila.append(
@@ -1142,6 +1196,23 @@ function filaCerrarBaza(deck: CardInfo[]): HTMLElement {
 /** Un error al cerrar una baza, sin romper la pantalla. */
 function avisoCerrarBaza(texto: string): void {
   app.prepend(aviso(texto, "error"));
+}
+
+/**
+ * No se puede pasar de ronda sin saber quién ganó.
+ *
+ * El motor devuelve `-1` mientras la ronda no tiene ganador, y la app no
+ * adivina: si elige un mano al azar, el advisor después razona sobre un estado
+ * que en la mesa no existía, y el error se ve como una recomendación rara en
+ * vez de como un dato faltante.
+ */
+function avisarRonda(): void {
+  app.prepend(
+    aviso(
+      "No se sabe todavía quién ganó la ronda. Jugá las tres bazas y después cerrala.",
+      "error",
+    ),
+  );
 }
 /** ¿Me toca guiar o responder, y con qué carta guió el rival si responde. */
 const selectorTurno = (deck: CardInfo[]): HTMLElement => {
@@ -1228,8 +1299,11 @@ function cartasRestantes(): number[] {
 
 /** Mis bazas ganadas y las suyas, derivadas del historial. */
 function marcadorBazas(): { mias: number; suyas: number } {
-  const mias = estado.bazas.filter((b) => b.gane).length;
-  return { mias, suyas: estado.bazas.length - mias };
+// La parda no suma para nadie. Antes caía en el `length - mias` y contaba como
+    // baza del rival, que no era lo que había pasado.
+    const mias = estado.bazas.filter((b) => b.gane && !b.parda).length;
+    const suyas = estado.bazas.filter((b) => !b.gane && !b.parda).length;
+    return { mias, suyas };
 }
 
 /**
@@ -1296,10 +1370,11 @@ function section(clase: string): HTMLElement {
   return el("section", clase);
 }
 
-function boton(texto: string, alPulsar: () => void, clase = ""): HTMLButtonElement {
+function boton(texto: string, alPulsar: () => void, clase = "", titulo?: string): HTMLButtonElement {
   const b = el("button", `boton ${clase}`.trim());
   b.type = "button";
   b.textContent = texto;
+  if (titulo) b.title = titulo;
   b.addEventListener("click", alPulsar);
   return b;
 }

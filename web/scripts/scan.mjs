@@ -101,6 +101,14 @@ function chequearMensaje(nombre, fn) {
   }
 }
 
+// Resultado de una baza: 0 la ganó el rival, 1 la gané yo, 2 parda.
+// Número y no booleano porque un booleano no puede expresar la parda, que no la
+// ganó nadie: con "gané: false" había que mentir y la parda contaba como baza
+// del rival.
+const YO = 1;
+const EL = 0;
+const PARDA = 2;
+
 const motor = () => {
   const m = new glue.Truco();
   m.loadTables(tablas());
@@ -133,7 +141,7 @@ console.log("\n1. Registrar bazas");
   const antes = JSON.parse(m.snapshot()).belief_size;
 
   // Una baza cerrada: mi carta, la suya y quién ganó.
-  correr("recordTrick(6, 3, true)", () => m.recordTrick(6, 3, true));
+  correr("recordTrick(6, 3, YO)", () => m.recordTrick(6, 3, YO));
   const tras = JSON.parse(m.snapshot()).belief_size;
   if (!(tras < antes)) {
     console.log(`  [MAL] registrar una baza no achica la belief: ${antes} -> ${tras}`);
@@ -151,8 +159,8 @@ console.log("\n1. Registrar bazas");
   // decirlo, no devolver una carta con 0 %.
   const m4 = motor();
   m4.setHand(Uint8Array.from([6, 5, 22]));
-  m4.recordTrick(6, 1, true);
-  m4.recordTrick(5, 2, true);
+  m4.recordTrick(6, 1, YO);
+  m4.recordTrick(5, 2, YO);
   const cerrada = JSON.parse(m4.bestPlay(undefined));
   if (cerrada.card !== null) {
     console.log(`  [MAL] con la mano cerrada recomienda "${cerrada.card}"`);
@@ -179,7 +187,7 @@ console.log("\n1. Registrar bazas");
     [6, 6, "la misma carta dos veces"],
     [6, 6, "cartas repetidas"],
   ]) {
-    const r = correr(`recordTrick invalido (${nombre})`, () => m2.recordTrick(mia, suya, true));
+    const r = correr(`recordTrick invalido (${nombre})`, () => m2.recordTrick(mia, suya, YO));
     if (r.estado === "ok") {
       console.log(`  [MAL] recordTrick aceptó ${nombre}`);
       fallos++;
@@ -189,10 +197,10 @@ console.log("\n1. Registrar bazas");
   const m3 = motor();
   m3.setHand(Uint8Array.from([6, 5, 22]));
   correr("cuatro bazas seguidas", () => {
-    m3.recordTrick(6, 1, true);
-    m3.recordTrick(5, 2, true);
-    m3.recordTrick(22, 3, true);
-    m3.recordTrick(1, 4, true);
+    m3.recordTrick(6, 1, YO);
+    m3.recordTrick(5, 2, YO);
+    m3.recordTrick(22, 3, YO);
+    m3.recordTrick(1, 4, YO);
   });
   liberar(m2);
   liberar(m3);

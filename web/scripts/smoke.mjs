@@ -33,6 +33,14 @@ await glue.default({ module_or_path: bytes });
 console.log(`  wasm cargado: ${(bytes.length / 1024).toFixed(0)} KiB`);
 
 const { Truco } = glue;
+// Resultado de una baza: 0 la ganó el rival, 1 la gané yo, 2 parda.
+// Número y no booleano porque un booleano no puede expresar la parda, que no la
+// ganó nadie: con "gané: false" había que mentir y la parda contaba como baza
+// del rival.
+const YO = 1;
+const EL = 0;
+const PARDA = 2;
+
 const motor = new Truco();
 
 chequeo(
@@ -274,7 +282,7 @@ motor.setScore(0, 0);
 motor.setHand(Uint8Array.from([6, 5, 22]));
 
 // Una baza normal: yo el 3 de copa, él el 1 de oros, gano yo.
-motor.recordTrick(22, 7, true);
+motor.recordTrick(22, 7, YO);
 const trasUna = JSON.parse(motor.snapshot());
 chequeo(trasUna.belief_size < 7770, "cerrar una baza achica la belief", `tiene ${trasUna.belief_size}`);
 
@@ -295,10 +303,10 @@ chequeo(
 );
 
 // La misma carta dos veces es un error, no una decisión.
-motor.recordTrick(22, 7, true);
+motor.recordTrick(22, 7, YO);
 let repetida = false;
 try {
-  motor.recordTrick(22, 3, true);
+  motor.recordTrick(22, 3, YO);
 } catch {
   repetida = true;
 }
@@ -307,11 +315,81 @@ chequeo(repetida, "no se puede jugar dos veces la misma carta");
 // Una carta que no está en la mano tampoco.
 let ajena = false;
 try {
-  motor.recordTrick(1, 7, true);
+  motor.recordTrick(1, 7, YO);
 } catch {
   ajena = true;
 }
 chequeo(ajena, "no se puede registrar una carta que no tenés");
+
+// ---------------------------------------------------------------------------
+// Bazas pardas
+//
+// La parda es el caso que antes no se podia registrar: `recordTrick` tomaba un
+// booleano "gané yo", asi que una parda se pasaba como false, o sea como baza
+// del rival. Estos tres chequeos fijan el comportamiento correcto.
+// ---------------------------------------------------------------------------
+
+motor.undoTrick();
+motor.setHand(Uint8Array.from([6, 5, 22]));
+
+// 7e (6) es la mas alta de mi mano: la primera la gano yo.
+// Cada baza usa cartas nuevas de los dos lados: el motor rechaza repetir una
+// carta que ya se joue, y eso no es lo que estos tests estan probando.
+motor.recordTrick(22, 7, YO);
+chequeo(motor.bazaScore()[0] === 1, "gané la primera: el marcador va 1 a 0");
+chequeo(
+  motor.bazaScore()[1] === 0,
+  "gané la primera: el rival no tiene ninguna baza",
+  `dice ${JSON.stringify(motor.bazaScore())}`,
+);
+
+// La segunda es parda. No la gano yo ni la gana él.
+motor.recordTrick(6, 8, PARDA);
+chequeo(
+  motor.bazaScore()[0] === 1 && motor.bazaScore()[1] === 0,
+  "la parda no suma baza para nadie",
+  `dice ${JSON.stringify(motor.bazaScore())}`,
+);
+
+// Con dos bazas todavia no hay ganador de ronda.
+chequeo(
+  motor.roundWinner() === -1,
+  "con dos bazas todavia no hay ganador de ronda",
+  `dice ${motor.roundWinner()}`,
+);
+
+// Tercera: la gana él. Nadie tenía dos, así que decide la tercera.
+motor.recordTrick(5, 9, EL);
+chequeo(
+  motor.roundWinner() === 0,
+  "1 a 1: decide la tercera baza, y la ganó el rival",
+  `dice ${motor.roundWinner()}`,
+);
+
+// Y una ronda con la TERCERA parda, que es el caso que mas se confunde.
+motor.undoTrick();
+motor.undoTrick();
+motor.undoTrick();
+motor.setHand(Uint8Array.from([6, 5, 22]));
+motor.recordTrick(22, 7, YO);
+motor.recordTrick(6, 8, EL);
+motor.recordTrick(5, 9, PARDA);
+chequeo(
+  motor.roundWinner() === 1,
+  "con la tercera parda manda la primera baza decidida",
+  `dice ${motor.roundWinner()}`,
+);
+
+// Un resultado que no existe tiene que ser un error, no un "no".
+let resultadoFalso = false;
+try {
+  motor.recordTrick(5, 7, 9);
+} catch {
+  resultadoFalso = true;
+}
+chequeo(resultadoFalso, "un resultado de baza que no existe se rechaza");
+
+motor.undoTrick();
 
 // ---------------------------------------------------------------------------
 // Flor

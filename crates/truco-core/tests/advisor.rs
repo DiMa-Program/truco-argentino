@@ -386,7 +386,7 @@ fn saber_las_bazas_marcadas_cambia_el_mensaje() {
 /// quién guía. No hay forma de mentirse.
 #[test]
 fn el_estado_se_deriva_de_las_bazas_y_no_se_puede_contradecir() {
-    use truco_core::advisor::{Baza, TrickState};
+    use truco_core::advisor::{Baza, ResultadoBaza, TrickState};
     let my_hand = mano_33();
     let cartas = my_hand.cards();
 
@@ -395,7 +395,9 @@ fn el_estado_se_deriva_de_las_bazas_y_no_se_puede_contradecir() {
     assert_eq!(vacia.score(), (0, 0));
     assert!(vacia.next_leader_is_me(true), "la primera guía el mano");
 
-    let una = TrickState { trucos: vec![Baza { mia: cartas[0], suya: cartas[1], gane: true }] };
+    let una = TrickState {
+        trucos: vec![Baza::nueva(cartas[0], cartas[1], ResultadoBaza::Yo)],
+    };
     let restan = una.my_remaining(my_hand);
     assert_eq!(restan.len(), 2, "jugué una: me quedan dos");
     assert!(!restan.contains(&cartas[0]), "la que jugué no puede volver");
@@ -404,8 +406,8 @@ fn el_estado_se_deriva_de_las_bazas_y_no_se_puede_contradecir() {
 
     let dos = TrickState {
         trucos: vec![
-            Baza { mia: cartas[0], suya: cartas[1], gane: true },
-            Baza { mia: cartas[1], suya: cartas[2], gane: true },
+            Baza::nueva(cartas[0], cartas[1], ResultadoBaza::Yo),
+            Baza::nueva(cartas[1], cartas[2], ResultadoBaza::Yo),
         ],
     };
     assert_eq!(dos.my_remaining(my_hand).len(), 1, "jugué dos: me queda una");
@@ -694,7 +696,7 @@ fn con_la_mano_cerrada_no_hay_que_jugar() {
 /// Arma el historial de bazas: yo gané `mias` seguidas y él ganó `suyas`.
 /// Las cartas concretas no son las que importa acá, sino el largo.
 fn partida(my_hand: Hand3, mias: usize, suyas: usize) -> truco_core::advisor::TrickState {
-    use truco_core::advisor::{Baza, TrickState};
+    use truco_core::advisor::{Baza, ResultadoBaza, TrickState};
     // La carta del rival tiene que ser UNA QUE NO ES MIA: si el filtrado por
     // cartas ya jugadas recibe una carta que ninguna mano candidata tiene,
     // descarta todas y el agrupado se cae entero. Por eso se toman del mazo
@@ -708,7 +710,11 @@ fn partida(my_hand: Hand3, mias: usize, suyas: usize) -> truco_core::advisor::Tr
     let mut trucos = Vec::new();
     for i in 0..mias + suyas {
         let mia = mio[i % 3];
-        trucos.push(Baza { mia, suya: suyo[i], gane: i < mias });
+        trucos.push(Baza::nueva(
+            mia,
+            suyo[i],
+            if i < mias { ResultadoBaza::Yo } else { ResultadoBaza::El },
+        ));
     }
     TrickState { trucos }
 }
@@ -951,4 +957,131 @@ fn un_canto_que_no_cierra_el_partido_no_tiene_riesgo_de_partido() {
             o.choice.label()
         );
     }
+}
+
+use truco_core::advisor::{ResultadoBaza, TrickState};
+
+// ---------------------------------------------------------------------------
+// Bazas pardas
+//
+// Estos tests existen porque la parda NO SE PODIA REGISTRAR: `record_trick`
+// tomaba un `i_won: bool` y `Baza` no tenia campo `parda`. Una parda se
+// guardaba como "no la gane yo", o sea como baza del rival, y de ahi salian
+// tres numeros mal: el marcador de bazas, quien guia la siguiente, y el
+// ganador de la ronda (que ni siquiera existia).
+// ---------------------------------------------------------------------------
+
+/// Arma un historial de bazas a partir de una secuencia de resultados.
+fn con_resultados(resultados: &[ResultadoBaza]) -> TrickState {
+    use truco_core::advisor::Baza;
+    let mio: Vec<truco_core::cards::Card> = (0..40u8).map(truco_core::cards::Card::from_index).collect();
+    let suyo: Vec<truco_core::cards::Card> =
+        (0..40u8).map(truco_core::cards::Card::from_index).skip(20).collect();
+    let trucos = resultados
+        .iter()
+        .enumerate()
+        .map(|(i, r)| Baza::nueva(mio[i], suyo[i], *r))
+        .collect();
+    TrickState { trucos }
+}
+
+#[test]
+fn la_parda_no_le_suma_baza_a_nadie() {
+    let t = con_resultados(&[ResultadoBaza::Yo, ResultadoBaza::Parda]);
+    assert_eq!(t.score(), (1, 0), "la parda no es baza del rival");
+
+    let al_reves = con_resultados(&[ResultadoBaza::El, ResultadoBaza::Parda]);
+    assert_eq!(al_reves.score(), (0, 1), "la parda tampoco suma a mi");
+}
+
+#[test]
+fn el_marcador_no_cuenta_la_parda_como_perdida() {
+    // Este es el bug exacto: antes `suyas = len - mias` y la parda caia en la
+    // rama de el. Con dos pardas el marcador decia 0-2 cuando de verdad es 1-0.
+    let t = con_resultados(&[ResultadoBaza::Yo, ResultadoBaza::Parda, ResultadoBaza::Parda]);
+    assert_eq!(t.score(), (1, 0));
+}
+
+#[test]
+fn despues_de_una_parda_seguia_el_que_tenia_la_parda() {
+    // Yo gano la primera. La segunda es parda. La tercera no se juega todavia.
+    // Tiene que seguir guiando YO, no el rival.
+    let t = con_resultados(&[ResultadoBaza::Yo, ResultadoBaza::Parda]);
+    assert!(
+        t.next_leader_is_me(false),
+        "tras la parda sigue guiando el que ya tenia la baza"
+    );
+}
+
+#[test]
+fn tres_pardas_sigue_guia_el_mano() {
+    let t = con_resultados(&[ResultadoBaza::Parda; 3]);
+    assert!(t.next_leader_is_me(true), "sin ninguna baza decidida guia el mano");
+    assert!(!t.next_leader_is_me(false));
+}
+
+// ---------------------------------------------------------------------------
+// Ganador de la ronda
+//
+// Es el que reemplaza la alternancia por paridad de numero de ronda. Esa
+// alternancia no es la regla del truco: el mano de la ronda siguiente es el que
+// gano esta.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sin_tres_bazas_no_hay_ganador() {
+    assert_eq!(con_resultados(&[ResultadoBaza::Yo]).round_winner(true), None);
+    assert_eq!(con_resultados(&[ResultadoBaza::Yo, ResultadoBaza::El]).round_winner(true), None);
+}
+
+#[test]
+fn dos_bazas_ganan_la_ronda() {
+    let t = con_resultados(&[ResultadoBaza::Yo, ResultadoBaza::Parda, ResultadoBaza::Yo]);
+    assert_eq!(t.round_winner(false), Some(true), "dos bazas: gana la ronda");
+
+    let r = con_resultados(&[ResultadoBaza::El, ResultadoBaza::Parda, ResultadoBaza::El]);
+    assert_eq!(r.round_winner(true), Some(false));
+}
+
+#[test]
+fn a_uno_a_uno_decide_la_tercera() {
+    let t = con_resultados(&[ResultadoBaza::Yo, ResultadoBaza::El, ResultadoBaza::Yo]);
+    assert_eq!(t.round_winner(false), Some(true));
+
+    let r = con_resultados(&[ResultadoBaza::Yo, ResultadoBaza::El, ResultadoBaza::El]);
+    assert_eq!(r.round_winner(true), Some(false));
+}
+
+#[test]
+fn con_tercera_parda_gana_la_primera_que_alguien_gano() {
+    // Yo gano la primera, el rival la segunda, y la tercera es parda.
+    // No hay dos bazas para nadie: decide la primera que se decidio.
+    let t = con_resultados(&[ResultadoBaza::Yo, ResultadoBaza::El, ResultadoBaza::Parda]);
+    assert_eq!(
+        t.round_winner(false),
+        Some(true),
+        "la tercera parda no define: manda la primera decidida"
+    );
+
+    let r = con_resultados(&[ResultadoBaza::El, ResultadoBaza::Yo, ResultadoBaza::Parda]);
+    assert_eq!(r.round_winner(true), Some(false));
+}
+
+#[test]
+fn con_una_parda_al_principio_decide_la_tercera() {
+    // Parda, yo gano la segunda, el rival la tercera. Nadie tiene dos bazas, asi
+    // que decide la tercera, que no fue parda.
+    let t = con_resultados(&[ResultadoBaza::Parda, ResultadoBaza::Yo, ResultadoBaza::El]);
+    assert_eq!(
+        t.round_winner(false),
+        Some(false),
+        "con una parda al principio sigue mandando la tercera"
+    );
+}
+
+#[test]
+fn con_las_tres_pardas_gana_el_mano() {
+    let t = con_resultados(&[ResultadoBaza::Parda; 3]);
+    assert_eq!(t.round_winner(true), Some(true), "todo parda: gana el mano");
+    assert_eq!(t.round_winner(false), Some(false));
 }

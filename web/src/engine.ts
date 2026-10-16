@@ -70,7 +70,8 @@ interface TrucoWasm {
   observeDeclared(value: number): void;
   observePlayedCard(card: number | undefined, heLeads: boolean): void;
   bestPlay(leadCard: number | undefined): string;
-  recordTrick(myCard: number, theirCard: number, iWon: boolean): void;
+  recordTrick(myCard: number, theirCard: number, resultado: number): void;
+    roundWinner(): number;
   undoTrick(): void;
   responseAdvice(seq: string, declared: number): string;
   setFlor(enabled: boolean): void;
@@ -180,8 +181,13 @@ export class Engine {
   }
 
   /** Registra una baza cerrada: qué jugamos cada uno y quién la ganó. */
-  recordTrick(myCard: number, theirCard: number, iWon: boolean): void {
-    this.#requiere().recordTrick(myCard, theirCard, iWon);
+  recordTrick(myCard: number, theirCard: number, resultado: number): void {
+    this.#requiere().recordTrick(myCard, theirCard, resultado);
+  }
+
+  /** Quién ganó la ronda: 1 yo, 0 él, -1 si la mano no terminó. */
+  roundWinner(): number {
+    return this.#requiere().roundWinner();
   }
 
   /** Deshace la última baza, para corregir un error. */

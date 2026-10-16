@@ -24,7 +24,7 @@
 //! - La contraflor y la contraflor al resto. La flor base y el envite sí están:
 //!   viven en [`crate::canto`], que sí es testeable en nativo.
 
-use crate::advisor::{Advisor, Baza as TrickStateBaza, Confidence, EnvidoMove, ResponseMove, TrickState};
+use crate::advisor::{Advisor, Baza as TrickStateBaza, Confidence, EnvidoMove, ResponseMove, ResultadoBaza, TrickState};
 use crate::belief::{BeliefState, Observation};
 use crate::bets::{EnvidoCall, EnvidoSeq};
 use crate::canto::{
@@ -202,22 +202,34 @@ impl Truco {
         Ok(())
     }
 
-    /// Registra una baza ya cerrada.
+/// Registra una baza ya cerrada.
 ///
-/// `my_card` es la carta que jugaste, `their_card` la que jugó el rival, y `i_won`
-/// quién se la quedó. De acá salen todas las cosas que antes eran parámetros
-/// sueltos y se podían contradecir entre sí: qué cartas te quedan, cuántas
-/// bazas llevás y a quién le toca guiar.
+/// `my_card` es la carta que jugaste, `their_card` la que jugó el rival, y
+/// `resultado` quién se la quedó: `0` él, `1` yo, `2` parda. De acá salen todas
+/// las cosas que antes eran parámetros sueltos y se podían contradecir entre
+/// sí: qué cartas te quedan, cuántas bazas llevás, a quién le toca guiar y
+/// quién ganó la ronda.
+///
+/// El resultado va como número y no como dos booleanos (`i_won` y `parda`)
+/// porque esa pareja se podía mandar contradictoria. Con el número, una parda se
+/// registra como parda y no como "la ganó él": antes contaba como baza perdida y
+/// además le mediaba una carta al rival que no tenía.
 ///
 /// Volver a llamar REEMPLAZA la última baza, no la agrega. Así se puede
 /// corregir sin que queden rastros.
 #[wasm_bindgen(js_name = recordTrick)]
-pub fn record_trick(&mut self, my_card: u8, their_card: u8, i_won: bool) -> Result<(), JsError> {
-        let mine = carta(my_card)?;
-        let suya = carta(their_card)?;
-        if mine == suya {
-            return Err(JsError::new("no pueden jugar la misma carta"));
-        }
+pub fn record_trick(&mut self, my_card: u8, their_card: u8, resultado: u8) -> Result<(), JsError> {
+    let mine = carta(my_card)?;
+    let suya = carta(their_card)?;
+    let resultado = match resultado {
+        0 => ResultadoBaza::El,
+        1 => ResultadoBaza::Yo,
+        2 => ResultadoBaza::Parda,
+        otro => return Err(JsError::new(&format!("resultado de baza inválido: {otro}"))),
+    };
+    if mine == suya {
+        return Err(JsError::new("no pueden jugar la misma carta"));
+    }
         let Some(hand) = self.my_hand else {
             return Err(JsError::new("primero hay que setHand"));
         };
@@ -231,7 +243,7 @@ pub fn record_trick(&mut self, my_card: u8, their_card: u8, i_won: bool) -> Resu
         if self.trucos.trucos.len() >= crate::rules::BAZAS_PER_HAND {
             return Err(JsError::new("la mano ya terminó"));
         }
-        self.trucos.trucos.push(TrickStateBaza { mia: mine, suya, gane: i_won });
+        self.trucos.trucos.push(TrickStateBaza::nueva(mine, suya, resultado));
         self.rebuild_belief();
         Ok(())
     }
@@ -552,6 +564,27 @@ pub fn undo_trick(&mut self) {
         }
         Ok(())
     }
+
+    /// Quién ganó la ronda: `1` yo, `0` el rival, `-1` si la mano no terminó.
+    ///
+    /// Existe para que la pantalla no alterne el mano por paridad del número de
+    /// ronda. Eso no es la regla del truco: el mano de la ronda siguiente es el
+    /// que ganó esta.
+    #[wasm_bindgen(js_name = roundWinner)]
+    pub fn round_winner(&self) -> i32 {
+        match self.trucos.round_winner(self.i_am_mano) {
+            Some(true) => 1,
+            Some(false) => 0,
+            None => -1,
+        }
+    }
+
+    /// Mis bazas ganadas y las del rival. Las pardas no cuentan para nadie.
+    #[wasm_bindgen(js_name = bazaScore)]
+    pub fn baza_score(&self) -> Vec<u32> {
+        let (mias, suyas) = self.trucos.score();
+        vec![mias as u32, suyas as u32]
+    }
 }
 
 
@@ -604,10 +637,15 @@ impl Truco {
                     bazas: [mias, suyas],
                 },
             });
-            if b.gane {
-                mias += 1;
-            } else {
-                suyas += 1;
+            // Una parda NO suma baza a nadie. Antes caía en el `else` y le
+            // adjudicaba una carta al rival que no se llevó, con lo cual la
+            // belief después contaba mal lo que quedaba en la mesa.
+            if b.hay_ganador() {
+                if b.gane {
+                    mias += 1;
+                } else {
+                    suyas += 1;
+                }
             }
         }
         // Y la carta de la baza en curso, que todavía no se cerró.

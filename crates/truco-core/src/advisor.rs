@@ -45,6 +45,22 @@ use crate::scoring::{falta_terms, MatchConfig, Score};
 use crate::testutil::catalog_ref;
 use crate::trickplay;
 
+/// Cómo terminó una baza, desde la perspectiva de quien la registra.
+///
+/// Es un enum y no dos booleanos (`i_won` y `parda`) porque la pareja
+/// contradictoria —"no la gané yo" y "fue parda" a la vez— no quiere decir nada
+/// y se puede mandar por error sin que nadie se entere. Con el enum el estado
+/// imposible no se puede escribir.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResultadoBaza {
+    /// La ganó el rival.
+    El = 0,
+    /// La gané yo.
+    Yo = 1,
+    /// Parda: no la ganó nadie, y el que estaba guiando vuelve a guiar.
+    Parda = 2,
+}
+
 /// Una baza ya cerrada: qué giocamos cada uno y quién se la quedó.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Baza {
@@ -52,13 +68,38 @@ pub struct Baza {
     pub mia: Card,
     /// La carta que jugó el rival.
     pub suya: Card,
-    /// `true` si la gané yo. Define quién guía la próxima.
+    /// `true` si la gané yo. Define quién guía la próxima. **No mirarlo si la
+    /// baza fue parda**: ahí no la ganó nadie, y contarla como perdida hace que
+    /// el marcador de bazas le sume una carta al rival que no se llevó.
     pub gane: bool,
+    /// `true` si la baza fue parda. Nadie se la llevó.
+    pub parda: bool,
+}
+
+impl Baza {
+    /// Registra una baza a partir del resultado, sin dejar el pardo colgando.
+    pub fn nueva(mia: Card, suya: Card, resultado: ResultadoBaza) -> Self {
+        Baza {
+            mia,
+            suya,
+            gane: resultado == ResultadoBaza::Yo,
+            parda: resultado == ResultadoBaza::Parda,
+        }
+    }
+
+    /// `true` si la baza la ganó alguien. Una parda no la ganó nadie.
+    ///
+    /// Es el filtro que tienen que usar todos los que cuentan bazas. Contar sin
+    /// él hace que una parda cuente como baza del rival.
+    pub fn hay_ganador(&self) -> bool {
+        !self.parda
+    }
 }
 
 impl std::fmt::Display for Baza {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} vs {} ({})", self.mia, self.suya, if self.gane { "yo" } else { "él" })
+        let quien = if self.parda { "parda" } else if self.gane { "yo" } else { "él" };
+        write!(f, "{} vs {} ({})", self.mia, self.suya, quien)
     }
 }
 
@@ -93,17 +134,82 @@ impl TrickState {
         hand.iter().copied().filter(|c| !jugadas.contains(c)).collect()
     }
 
-    /// Mis bazas ganadas y las suyas.
+    /// Mis bazas ganadas y las suyas. Las pardas no cuentan para nadie.
+    ///
+    /// El filtro por `hay_ganador` no es cosmético: antes, una parda caía en la
+    /// rama de "la ganó él" y el marcador quedaba desfasado en una.
     pub fn score(&self) -> (usize, usize) {
-        let mias = self.trucos.iter().filter(|b| b.gane).count();
-        let suyas = self.trucos.len() - mias;
+        let mias = self.trucos.iter().filter(|b| b.hay_ganador() && b.gane).count();
+        let suyas = self.trucos.iter().filter(|b| b.hay_ganador() && !b.gane).count();
         (mias, suyas)
     }
 
-    /// Quién guía la baza siguiente: el que ganó la última, o el mano si es la
-    /// primera.
+    /// Quién guía la baza siguiente: el que ganó la última baza **decidida**.
+    ///
+    /// "Decidida" y no "la última". Después de una parda sigue guiando el mismo
+    /// que guiaba, así que hay que mirar para atrás hasta la última baza que
+    /// alguien ganó. Si todas fueron pardas, sigue el mano.
     pub fn next_leader_is_me(&self, i_am_mano: bool) -> bool {
-        self.trucos.last().map(|b| b.gane).unwrap_or(i_am_mano)
+        self.trucos
+            .iter()
+            .rev()
+            .find(|b| b.hay_ganador())
+            .map(|b| b.gane)
+            .unwrap_or(i_am_mano)
+    }
+
+    /// Quién ganó la ronda: `Some(true)` si la gané yo, `Some(false)` si la
+    /// ganó el rival, `None` si la mano todavía no terminó.
+    ///
+    /// # Por qué existe
+    ///
+    /// Porque el mano de la ronda siguiente es **el que ganó esta**. La app
+    /// alternaba por paridad de número de ronda, que no es la regla, y el
+    /// valor alimentaba `setMano`: o sea que el advisor repartía mal.
+    ///
+    /// # La regla, en orden de prioridad
+    ///
+    /// 1. Si alguien ganó **dos** bazas, ese ganó la ronda.
+    /// 2. Si la **tercera** no fue parda, la tercera decide.
+    /// 3. Si la tercera fue parda, gana el ganador de la **primera** que no
+    ///    fue parda.
+    /// 4. Si las tres fueron parda, gana el mano.
+    ///
+    /// Misma prioridad que `rules::resolve_hand`, que es el que la usa cuando
+    /// la mano se juega entera. Acá se necesita aparte porque la app registra
+    /// las bazas de a una y necesita el resultado antes de que se complete la
+    /// tercera.
+    pub fn round_winner(&self, i_am_mano: bool) -> Option<bool> {
+        if self.trucos.len() < crate::rules::BAZAS_PER_HAND {
+            return None;
+        }
+
+        let (mias, suyas) = self.score();
+
+        // 1. Dos bazas decididas.
+        if mias >= 2 {
+            return Some(true);
+        }
+        if suyas >= 2 {
+            return Some(false);
+        }
+
+        // Nadie llegó a dos: van 1-1 (o menos, si hubo pardas) y decide la
+        // tercera, siempre que no haya sido parda.
+        let tercera = self.trucos[crate::rules::BAZAS_PER_HAND - 1];
+        if tercera.hay_ganador() {
+            return Some(tercera.gane);
+        }
+
+        // 3. Tercera parda: gana la primera que alguien ganó.
+        for b in &self.trucos {
+            if b.hay_ganador() {
+                return Some(b.gane);
+            }
+        }
+
+        // 4. Las tres pardas.
+        Some(i_am_mano)
     }
 }
 
