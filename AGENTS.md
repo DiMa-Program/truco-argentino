@@ -33,7 +33,7 @@ Si tocás el orden de los palos, `PALOS` y el índice tienen que coincidir.
 ### 2. Los tests van **siempre** en release
 
 ```bash
-cargo test --release        # 289 tests, ~80 s
+cargo test --release        # 299 tests, ~80 s
 ```
 
 En debug los tests de tablas tardan muchísimo. No es opcional, no es una
@@ -86,10 +86,10 @@ node scripts/mirar.mjs rapido       # solo clippy + encoding, sin tests
 O por partes:
 
 ```bash
-cargo test --release                              # 289 tests
+cargo test --release                              # 299 tests
 node scripts/check-encoding.mjs                   # caracteres raros
 cargo run --release -p gen-tables                 # regenera los .bin (~40 s)
-cd web && npm run verify                          # build + humo 97 + scanner 336
+cd web && npm run verify                          # build + humo 104 + scanner 336
 ```
 
 ### Qué es cada prueba
@@ -133,6 +133,14 @@ Son lo que el motor calcula. Si alguna de estas no coincide, el motor está mal.
 - **La parda**: gana el que juntó **dos** bazas. Si nadie llegó a dos y la tercera
   fue parda, gana el de la **primera** baza no parda. Si las tres fueron parda,
   gana el mano. "Gana el que ganó la primera" es una generalización incorrecta.
+- **Una parda no la gana nadie**, y **el que la parda vuelve a guiding**: no se
+  puede contar como baza perdida ni cambiar el guía. `recordTrick` recibe el
+  resultado como número (`0` él, `1` yo, `2` parda), no como dos booleanos,
+  porque "no la gané yo" + "fue parda" a la vez no significa nada.
+- **El mano de la ronda siguiente es el que ganó la anterior**, no el de la
+  paridad del número de ronda. Dos rondas seguidas las puede ganar el mismo.
+  Sale de `Truco::roundWinner()`, y `TrickState::round_winner` aplica la misma
+  prioridad que `rules::resolve_hand`.
 - **"No quiero" al envido NO termina la mano**: solo anota los puntos del canto
   acumulado y las bazas siguen. **Al truco sí** la termina.
 - **Falta envido**: en las malas vale el partido entero. Con alguna de las dos en
@@ -204,6 +212,13 @@ Para no repetirlos. Están en detalle en el historial de git y en
    cantó. Hacía que "cantar y que no quieran" pareciera oro.
 5. **`by_name("shark")` devolvía `None`** porque el arquetipo se llama `shark()`
    pero su `name` es `"tournament"`. Caía en silencio al modelo promedio.
+6. **El mano salía de la paridad de ronda.** `estado.ronda % 2 === 1`, con un
+   comentario que decía que era la regla del juego. No lo era: va el ganador de
+   la ronda anterior. Como alimentaba `setMano`, el advisor repartía mal.
+7. **La parda no se podía registrar.** `recordTrick` tomaba `i_won: bool` y no
+   había dónde anotar que nadie la ganó, así que caía como baza del rival: mal el
+   marcador, mal el guía siguiente, y mal la belief. Ocultaba el error del
+   punto 6, porque sin pardas no hay forma de saber quién ganó la ronda.
 
 ---
 

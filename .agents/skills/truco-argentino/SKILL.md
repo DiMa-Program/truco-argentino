@@ -115,6 +115,10 @@ Si alguna no coincide, **el motor está mal**, no la regla.
 - **La parda**: gana el que juntó **dos** bazas. Si nadie llegó a dos y la tercera
   fue parda, gana el de la **primera** baza no parda. Si las tres fueron parda,
   gana el mano.
+- **Una parda no la gana nadie, y el que la parda vuelve a guiar.** `recordTrick`
+  la recibe como número (`0` él, `1` yo, `2` parda), no como dos booleanos.
+- **El mano de la ronda siguiente es el que ganó la anterior**, no el de la
+  paridad del número de ronda. Dos rondas seguidas las puede ganar el mismo.
 - **"No quiero" al envido NO termina la mano**: anota los puntos y las bazas
   siguen. **Al truco sí** la termina.
 - **Falta envido**: en las malas vale el partido entero. Con alguno en buenas vale
@@ -166,6 +170,13 @@ No repetirlos.
    (respuesta).
 7. **`liber(m)` en `scan.mjs` se llamaba a sí misma** en vez de a `m.free()`. La
    recursión infinita la tapaba el `catch` y el scanner nunca liberaba un motor.
+8. **La parda no se podía registrar.** `recordTrick` tomaba `i_won: bool` y no
+   había dónde anotar que nadie la ganó, así que contaba como baza del rival: mal
+   el marcador, mal el guía siguiente, y mal la belief. Ocultaba el error 9.
+9. **El mano salía de `ronda % 2`**, con un comentario que decía que era la
+   regla del juego. No lo era: va el ganador de la ronda anterior. Como
+   alimentaba `setMano`, el advisor repartía mal y el orden de las cartas
+   recomendadas era de otro.
 
 ---
 
