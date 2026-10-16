@@ -226,4 +226,4 @@ desde GitHub, pero igual hay que compilar en local y subir el `dist/`.
 2. `opponent.rs` no sabe cuánto hay en juego: `envido_accept_likelihood` recibe
    solo los tantos, así que "quiero" a un 33 vale igual a 2 puntos que a 30. Es el
    pendiente más grande del proyecto.
-3. `STATE.md` quedó desactualizado (dice 245 tests; son 289).
+3. `STATE.md` quedó desactualizado (dice 245 tests; son 299).
