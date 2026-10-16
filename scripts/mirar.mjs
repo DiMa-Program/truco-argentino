@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Verificación del proyecto en un comando, con la salida resumida.
 //
-//   node scripts/mirar.sh              # todo
-//   node scripts/mirar.sh rapido       # solo clippy + tsc, sin tests (~15 s)
-//   node scripts/mirar.sh completo     # todo, mostrando la salida completa
+//   node scripts/mirar.mjs              # todo
+//   node scripts/mirar.mjs rapido       # solo clippy + encoding, sin tests (~15 s)
+//   node scripts/mirar.mjs completo     # todo, mostrando la salida completa
 //
 // # Por qué existe
 //
@@ -95,7 +95,7 @@ function mal(texto) {
  * Corre un comando y devuelve su salida JUNTA con su codigo de salida.
  *
  * El `2>&1` va adentro del `spawnSync` a proposito: en PowerShell se leeria
- * como otra cosa y los errores de compilacion son justo lo que hay que ver que son justo lo que hay que ver.
+ * como otra cosa y los errores de compilacion son justo lo que hay que ver.
  */
 function correr(comando, args, cwd) {
   const { bin, shell } = resolver(comando);

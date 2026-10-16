@@ -33,7 +33,7 @@ Si tocás el orden de los palos, `PALOS` y el índice tienen que coincidir.
 ### 2. Los tests van **siempre** en release
 
 ```bash
-cargo test --release        # 275 tests, ~80 s
+cargo test --release        # 289 tests, ~80 s
 ```
 
 En debug los tests de tablas tardan muchísimo. No es opcional, no es una
@@ -80,13 +80,13 @@ chore: fija LF en todo el repo
 
 ```bash
 node scripts/mirar.mjs              # TODO, salida resumida (10 s si ya compiló)
-node scripts/mirar.mjs rapido       # solo clippy + tsc, sin tests
+node scripts/mirar.mjs rapido       # solo clippy + encoding, sin tests
 ```
 
 O por partes:
 
 ```bash
-cargo test --release                              # 275 tests
+cargo test --release                              # 289 tests
 node scripts/check-encoding.mjs                   # caracteres raros
 cargo run --release -p gen-tables                 # regenera los .bin (~40 s)
 cd web && npm run verify                          # build + humo 97 + scanner 336
@@ -183,8 +183,8 @@ peor que jugar. Es una mecánica de 2v2, no un bug pendiente.
   `canto.rs` existe exactamente por eso.
 - Todo lo que cruce al navegador es **JSON en un `String`**, no estructuras
   tipadas. Es deliberado: la UI hace `JSON.parse` sin dependencias extra.
-- Los tipos de `web/src/engine.ts` se **generan** desde los `struct` de Rust con
-  `npm run gen:tipos`. No se editan a mano.
+- Los tipos de `web/src/tipos/` se **generan** desde los `struct` de Rust con
+  `cargo test -p truco-core --test gen_tipos`. No se editan a mano.
 
 ---
 
@@ -223,7 +223,27 @@ Para no repetirlos. Están en detalle en el historial de git y en
 ## Publicar
 
 El build de Vercel **no tiene Rust**, así que no puede correr `npm run build`.
-Se sube el `dist/` ya compilado. Ver `web/vercel.json` y `web/.vercelignore`.
+Por eso el deploy es un workflow de GitHub Actions (`.github/workflows/deploy.yml`):
+compila en los runners, que traen Rust y Node, y le sube a Vercel el `dist/` ya
+hecho. Ver `web/vercel.json` y `web/.vercelignore`, que dejan el build en `null`
+a propósito.
 
-Recordá que el repo es privado y el plan Hobby de Vercel no despliega desde
-repos privados: hay que subir la carpeta.
+Tres cosas que no se ven hasta que rompen:
+
+- La versión del **CLI de `wasm-bindgen` tiene que coincidir exactamente** con la
+  del crate en `Cargo.lock`. El workflow la lee del lock, no la escribe a mano.
+  Si no coinciden el `.wasm` se genera igual y el fallo aparece en runtime.
+- El workflow **verifica los sha256 de las dos `.bin`** antes de desplegar, con
+  los mismos valores de arriba. Un cambio es una señal de alarma, no un deploy.
+- La CLI de Vercel **no puede crear tokens** (403). El `VERCEL_TOKEN` que usa el
+  workflow se crea en <https://vercel.com/account/tokens> y se guarda como secreto
+  del repo con `gh secret set VERCEL_TOKEN`.
+
+El repo es **público**, así que el plan Hobby ya no es el límite: el límite es
+que no hay Rust, y eso está resuelto con CI.
+
+## También hay una skill del repo
+
+`.agents/skills/truco-argentino/SKILL.md`. Es lo mismo que este archivo pero
+carga sola, así que sirve cuando uno no se acuerda de leerlo. Si tocás una regla
+de acá, tocá también la skill: si divergen, gana la que se cargó primero.

@@ -1,0 +1,121 @@
+# Compila la PWA y la publica en Vercel.
+#
+# Por que CI y no el build de Vercel: el build completo necesita `cargo` con el
+# target `wasm32-unknown-unknown`, el `wasm-bindgen` CLI y los dos `.bin`
+# precomputadas. Vercel no tiene Rust, y las tablas tardan ~40 s en generarse.
+#
+# Los runners de GitHub traen Rust y Node preinstalados, asi que aca se compila
+# todo y a Vercel solo se le sube el `dist/` ya hecho. Es el mismo contrato que
+# ya usaba el deploy manual: `web/vercel.json` deja `buildCommand` en null a
+# proposito.
+
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # Un deploy a la vez. Sin esto, dos pushes seguidos se pisan el deploy.
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Salen de `web/.vercel/project.json`. No son secretos: identifican el
+  # proyecto, no dan acceso a el.
+  VERCEL_ORG_ID: team_CTr6ZfqrLWln7XH0KJduVZef
+  VERCEL_PROJECT_ID: prj_yt0AbwAZ6hKQpJSszI66GvEZW5Se
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # La version de Rust sale del `rust-version` del workspace (1.75), para no
+      # depender de lo que venga instalado en el runner.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          key: deploy
+
+      # La version del `wasm-bindgen` CLI tiene que coincidir EXACTAMENTE con la
+      # del crate en `Cargo.lock`. Si no coinciden, el error es críptico: el
+      # `.wasm` se genera igual pero el glue de JS queda desfasado y revienta en
+      # runtime, no en el build. Por eso la version se lee del lock en vez de
+      # escribirla a mano y olvidarse.
+      - name: instala wasm-bindgen CLI
+        run: |
+          set -euo pipefail
+          # Node en vez de awk: ya esta instalado y el `Cargo.lock` es un TOML
+          # con una estructura fija, que con grep es facil de matchear de mas.
+          version=$(node -e '
+            const fs = require("fs");
+            const m = fs.readFileSync("Cargo.lock", "utf8")
+              .match(/name = "wasm-bindgen"\nversion = "([^"]+)"/);
+            if (!m) process.exit(1);
+            process.stdout.write(m[1]);
+          ') || { echo "::error::no encontre wasm-bindgen en Cargo.lock"; exit 1; }
+          echo "wasm-bindgen $version"
+          url="https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${version}/wasm-bindgen-${version}-x86_64-unknown-linux-musl.tar.gz"
+          curl -fsSL "$url" | tar xz
+          install -m 755 wasm-bindgen-${version}-x86_64-unknown-linux-musl/wasm-bindgen /usr/local/bin/wasm-bindgen
+          wasm-bindgen --version
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # Las tablas no se versionan (son deterministas y pesan ~2 MB), asi que en
+      # CI hay que generarlas siempre.
+      - name: genera las tablas
+        run: cargo run --release -p gen-tables
+
+      # Guarda contra el error que no avisa solo: si un `.bin` cambia de sha256
+      # es porque toco una regla del truco o una probabilidad, y eso hay que
+      # revisar antes de subirlo, no despues.
+      - name: verifica las tablas
+        run: |
+          set -euo pipefail
+          check() {
+            got=$(sha256sum "tables/$1" | cut -d' ' -f1)
+            if [ "$got" != "$2" ]; then
+              echo "::error::$1 cambio de sha256: $got (se esperaba $2). Reviso que no haya cambiado una regla del truco."
+              exit 1
+            fi
+            echo "$1 $got"
+          }
+          check truco-v1.bin 8c0b0675e072f7402115b9c312f9e1ccc3d3d0169679520ac1372acb49080195
+          check envido-policy-v1.bin 904ffe9a46ddd16aa6223e993a2a54a6ab614d6e36ec83facf71b439d4f7c56a
+
+      - name: compila y verifica
+        working-directory: web
+        run: |
+          npm ci
+      # `mirar.mjs` es la puerta: los dos clippy, los 289 tests, el encoding, los
+      # sha256 de las tablas, y el front (build + tsc + humo + scanner). El build
+      # sale de adentro, asi que no hace falta un `npm run build` aparte.
+      - name: verifica todo
+        run: node scripts/mirar.mjs
+
+      - name: instala vercel CLI
+        run: npm i -g vercel@latest
+
+      # `.vercelignore` deja el `dist/` solo, y `vercel.json` deja el build en
+      # null: Vercel no compila nada, solo sirve lo que subio CI.
+      - name: despliega en Vercel
+        working-directory: web
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: vercel --prod --yes
+
+      - name: resume
+        run: echo "::notice::desplegado desde ${{ github.sha }}"
