@@ -8,6 +8,11 @@
 #   envido-policy-v1.bin 191 KiB  (~12 s, 816 juegos de CFR+)
 /tables/*.bin
 
+# Salida de `ts-rs` cuando `TS_RS_EXPORT_DIR` no esta seteado: los `.ts` que
+# SI se versionan van en `web/src/tipos/`. Este directorio es el default de la
+# libreria y solo aparece si se corre un test sin el build.rs de por medio.
+crates/truco-core/bindings/
+
 # Node / PWA (Fase 4)
 node_modules/
 dist/

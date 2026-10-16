@@ -4,23 +4,36 @@
 // respuesta. Es menos elegante que los objetos tipados pero es exactamente
 // igual de rápido, y evita una dependencia más en el bundle.
 
-export interface CardInfo {
-  index: number;
-  name: string;
-}
+// Los tipos vienen de Rust.
+//
+// Antes eran ocho interfaces escritas a mano, y esa es la razon de que se
+// desincronizaran sin avisar: agregar un campo al motor obligaba a acordarse de
+// tocar tres lugares mas, y `tsc` solo revisa los tipos, nunca detecta que
+// falte un campo. Ahora `cargo test -p truco-core` los escribe en `tipos/` desde
+// los `struct` de `web_types.rs`.
+//
+// Para regenerarlos despues de tocar un struct:
+//
+//     cargo test -p truco-core --test gen_tipos
+//
+// Los `.ts` se versionan a proposito: el build de Vercel no tiene Rust, y la
+// pantalla tiene que poder compilar sola. Ver `AGENTS.md`.
 
-export interface Snapshot {
-  my_envido: number;
-  has_flor: boolean;
-  p_opponent_flor: number;
-  falta_value: number;
-  falta_asymmetric: boolean;
-  opponent_model: string;
-  belief_size: number;
-  concentration: number;
-  declared: number | null;
-  cantos: CantosJson;
-}
+import type {
+  AdviceJson,
+  CardJson,
+  OptionJson,
+  PlayJson,
+  ResponseJson,
+  ResponseOptionJson,
+  Snapshot as SnapshotRust,
+} from "./tipos";
+
+/** Una carta de la baraja, tal como la devuelve el motor. */
+export type CardInfo = CardJson;
+
+/** Qué le pasó a la mano. Los docs de cada campo vienen del lado de Rust. */
+export type Snapshot = SnapshotRust;
 
 /**
  * Flor y truco.
@@ -29,88 +42,22 @@ export interface Snapshot {
  * para eso. Lo que trae es el estado del canto y cuántos puntos hay en juego, que
  * es lo que la pantalla necesita para pintar los botones sin inventar nada.
  */
-export interface CantosJson {
-  flor_enabled: boolean;
-  flor_pendiente: boolean;
-  mi_flor: number | null;
-  flor_fase: "sin-cantar" | "envite" | "resuelta";
-  flor_ganador: "yo" | "rival" | null;
-  flor_puntos: number | null;
-  flor_resumen: string;
-  truco_fase: "sin-cantar" | "esperando" | "aceptado" | "rechazado";
-  truco_nivel: string;
-  truco_puede_cantar: boolean;
-  truco_puede_subir: boolean;
-  truco_esperando: boolean;
-  truco_en_el_aire: boolean;
-  truco_aceptado: boolean;
-  truco_puntos_en_juego: number;
-  truco_puntos_no_quiero: number;
-  truco_si_no_quiero: number;
-  truco_cerrada: boolean;
-  truco_resumen: string;
-}
+export type CantosJson = SnapshotRust["cantos"];
 
-export interface EnvidoOptionJson {
-  choice: string;
-  ev: number;
-  p_they_want: number;
-  p_win_if_wanted: number;
-  points: number;
-  is_bluff: boolean;
-  declared: number;
-  /**
-   * Probabilidad de que esta jugada en particular te deje sin la partida.
-   *
-   * Cero para cualquier canto que no la cierre. Es el dato que el EV no
-   * alcanza a decir: el EV son puntos, y +3 puntos no es lo mismo que un 14 % de
-   * perder todo.
-   */
-  risk_match: number;
-}
+/** Una opción del consejo, con su EV y su riesgo de perder la partida. */
+export type EnvidoOptionJson = OptionJson;
 
-export interface Advice {
-  recommended: string;
-  declared: number;
-  confidence: string;
-  my_value: number;
-  p_win_envido: number;
-  points_at_stake: number;
-  /** Riesgo de perder la partida con la opción recomendada. */
-  risk_match: number;
-  options: EnvidoOptionJson[];
-  reasons: string[];
-}
+/** El consejo del advisor. */
+export type Advice = AdviceJson;
 
-export interface PlayAdvice {
-  card: string | null;
-  win_prob: number;
-  alternatives: [string, number][];
-  reasons: string[];
-}
+/** Qué carta jugar en la baza en curso. */
+export type PlayAdvice = PlayJson;
 
 /** Una opción de respuesta a un canto. */
-export interface ResponseOptionJson {
-  choice: string;
-  ev: number;
-  points: number;
-  equilibrium_mass: number;
-  /** Riesgo de que esta respuesta te deje sin la partida. */
-  risk_match: number;
-}
+export type RespuestaOptionJson = ResponseOptionJson;
 
 /** La respuesta a un canto: quiero, no quiero o subir. */
-export interface ResponseAdvice {
-  recommended: string;
-  confidence: string;
-  p_win_if_wanted: number;
-  declared: number;
-  /** Riesgo de perder la partida con la respuesta recomendada. */
-  risk_match: number;
-  options: ResponseOptionJson[];
-  reasons: string[];
-}
-
+export type ResponseAdvice = ResponseJson;
 /** La clase que exporta wasm-bindgen. Se tipa acá a mano: no hay tipos. */
 interface TrucoWasm {
   free(): void;

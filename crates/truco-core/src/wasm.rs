@@ -36,149 +36,12 @@ use crate::hand::Hand3;
 use crate::opponent::{OpponentModel, PlayContext};
 use crate::scoring::{MatchConfig, Score};
 use crate::tables::Tables;
+use crate::web_types::{
+    AdviceJson, CantosJson, CardJson, OptionJson, PlayJson, ResponseJson, ResponseOptionJson, Snapshot,
+};
 use wasm_bindgen::prelude::*;
 
 /// Qué le pasó a la mano, en la forma que la UI necesita.
-#[derive(serde::Serialize)]
-struct Snapshot {
-    /// Tantos de la mano actual.
-    my_envido: u8,
-    /// `true` si tengo flor, que es obligatoria.
-    has_flor: bool,
-    /// Probabilidad de que el rival tenga flor, según la belief.
-    p_opponent_flor: f64,
-    /// Tantos que van en juego con una falta envido.
-    falta_value: u32,
-    /// `true` si la falta no cierra el partido si la gana el que va atrás.
-    falta_asymmetric: bool,
-    /// Mano del rival.
-    opponent_model: String,
-    /// Cuántas manos siguen siendo posibles para el rival.
-    belief_size: usize,
-    /// Concentración de la belief: 1 es "sé exactamente qué tiene".
-    concentration: f64,
-    /// Tantos declarados por el rival, si declaró.
-    declared: Option<u8>,
-    /// Flor y truco, que la pantalla los pinta aparte.
-    cantos: CantosJson,
-}
-
-/// El canto de flor y la escalera del truco, como los necesita la UI.
-#[derive(serde::Serialize)]
-struct CantosJson {
-    /// `true` si la pantalla muestra el canto de flor. Lo decide el usuario.
-    flor_enabled: bool,
-    /// `true` si tengo flor pendiente de cantar, que es obligada.
-    flor_pendiente: bool,
-    /// El valor de mi flor: 20 más las tres cartas, con las figuras en cero.
-    mi_flor: Option<u8>,
-    /// `"sin-cantar"`, `"envite"` o `"resuelta"`.
-    flor_fase: String,
-    /// Quién se lleva los puntos de la flor: `"yo"`, `"rival"` o `null`.
-    flor_ganador: Option<String>,
-    flor_puntos: Option<u32>,
-    /// Frase lista para mostrar, para que el HTML no tenga que armar el texto.
-    flor_resumen: String,
-
-    /// `"sin-cantar"`, `"esperando"`, `"aceptado"` o `"rechazado"`.
-    truco_fase: String,
-    /// `"truco"`, `"retruco"`, `"vale cuatro"` o `""`.
-    truco_nivel: String,
-    /// Si me toca cantar truco de cero.
-    truco_puede_cantar: bool,
-    /// Si me toca subir un escalón.
-    truco_puede_subir: bool,
-    /// Si el rival cantó y me toca responder.
-    truco_esperando: bool,
-    /// Si canté yo y la pelota está del otro lado.
-    truco_en_el_aire: bool,
-    /// Si el canto está querido y se está jugando.
-    truco_aceptado: bool,
-    /// Cuántos puntos vale la mano si se quiere.
-    truco_puntos_en_juego: u32,
-    /// Puntos que se lleva el que cantó si el otro no quiere, ya resuelto.
-    truco_puntos_no_quiero: u32,
-    /// Puntos que se llevaría el que cantó si el otro no quisiera ahora.
-    truco_si_no_quiero: u32,
-    /// `true` si la mano terminó con un "no quiero" del truco.
-    truco_cerrada: bool,
-    truco_resumen: String,
-}
-
-#[derive(serde::Serialize)]
-struct AdviceJson {
-    /// `"callarse"`, `"envido"`, `"real envido"` o `"falta envido"`.
-    ///
-    /// Con ESPACIO, no con guion: sale de [`EnvidoMove::label`], que es el texto
-    /// que el advisor ya usa en las razones. Antes este doc decia
-    /// `"real-envido"` y `"falta-envido"`, que es lo que devuelve
-    /// `response_move_label` pero NO esta funcion: dos nombres distintos para el
-    /// mismo canto, y el doc insistia en el equivocado.
-    recommended: String,
-    /// Tantos a declarar con el canto.
-    declared: u8,
-    /// `"firme"`, `"empate"` o `"bluff"`.
-    confidence: String,
-    my_value: u8,
-    p_win_envido: f64,
-    points_at_stake: u32,
-    /// Con qué probabilidad real la recomendación deja al jugador **sin la
-    /// partida**. Cero para todo canto que no la cierre.
-    ///
-    /// Viaja aparte del EV a propósito: el EV son puntos, y un EV de +3 no dice si
-    /// eso es buena idea. Esto sí.
-    risk_match: f64,
-    options: Vec<OptionJson>,
-    reasons: Vec<String>,
-}
-
-#[derive(serde::Serialize)]
-struct OptionJson {
-    choice: String,
-    ev: f64,
-    p_they_want: f64,
-    p_win_if_wanted: f64,
-    points: u32,
-    is_bluff: bool,
-    declared: u8,
-    /// Probabilidad de que esta jugada en particular pierda el partido entero.
-    risk_match: f64,
-}
-
-/// La respuesta a un canto: quiero, no quiero o subir.
-#[derive(serde::Serialize)]
-struct ResponseJson {
-    /// `"quiero"`, `"no-quiero"`, `"subir-envido"`, `"subir-real-envido"` o
-    /// `"subir-falta-envido"`.
-    recommended: String,
-    confidence: String,
-    /// Mi probabilidad de ganar el envido si aceptan.
-    p_win_if_wanted: f64,
-    /// Tantos que declaró el rival.
-    declared: u8,
-    /// Con qué probabilidad real la respuesta recomendada deja al jugador sin la
-    /// partida. Cero si no puede perderla.
-    risk_match: f64,
-    options: Vec<ResponseOptionJson>,
-    reasons: Vec<String>,
-}
-
-#[derive(serde::Serialize)]
-struct ResponseOptionJson {
-    choice: String,
-    ev: f64,
-    points: u32,
-    equilibrium_mass: f64,
-    /// Probabilidad de que esta respuesta en particular pierda el partido.
-    risk_match: f64,
-}
-
-/// Convierte un índice de la UI en una carta, **validando el rango**.
-///
-/// `Card::from_index` valida con `assert!`, que en release no devuelve un
-/// error sino que rompe el módulo entero. Eso dejaba tres rutas de panic
-/// (observar una carta jugada, la salida de una baza y la mano) que además
-/// envenenaban a `free()`. Acá el error es un mensaje limpio.
 fn carta(index: u8) -> Result<Card, JsError> {
     if (index as usize) >= crate::cards::DECK_SIZE {
         return Err(JsError::new(&format!(
@@ -691,22 +554,6 @@ pub fn undo_trick(&mut self) {
     }
 }
 
-#[derive(serde::Serialize)]
-struct PlayJson {
-    /// Nombre de la carta recomendada, si hay.
-    card: Option<String>,
-    /// Probabilidad de ganar la mano con esa carta.
-    win_prob: f64,
-    /// Todas las candidatas con su probabilidad.
-    alternatives: Vec<(String, f64)>,
-    reasons: Vec<String>,
-}
-
-#[derive(serde::Serialize)]
-struct CardJson {
-    index: u8,
-    name: String,
-}
 
 impl Default for Truco {
     fn default() -> Self {

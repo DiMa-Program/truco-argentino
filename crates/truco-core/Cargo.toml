@@ -13,14 +13,27 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 
-# Solo al compilar para el navegador. Gateado por target para que el build
-# nativo no arrastre la dependencia.
+# Las formas del JSON que cruzan al navegador.
+#
+# Esto vive acá y NO gateado por target, por una razón concreta: los `struct`
+# están en `web_types.rs`, un módulo normal, así que `cargo test` los mira y
+# `cargo clippy --all-targets` los revisa. Antes estaban en `wasm.rs`, atrás de
+# un cfg, y eso los dejaba sin ninguna cobertura.
+#
+# El costo es compilar `serde` en nativo. `serde` sin `derive` es una dependencia
+# chica y el proyecto ya compila 76 millones de pares en los tests, así que es
+# marginal al lado de eso.
+serde = { version = "1", features = ["derive"] }
+# Lo usan los tests de `web_types.rs` en nativo, y el motor en wasm.
+serde_json = "1"
+
+# Genera los tipos de TypeScript desde los mismos `struct`, para que
+# `web/src/tipos.ts` no sea una copia que hay que mantener a mano. Es lo que
+# evita que un campo nuevo exista en Rust y no en la pantalla.
+ts-rs = "12"
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
-# Solo para serializar la respuesta del advisor. La UI la parsea con
-# `JSON.parse`, que es gratis; no hace falta traer todo el stack de derive.
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 
 [dev-dependencies]
 proptest = "1"

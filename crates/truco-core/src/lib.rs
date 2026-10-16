@@ -41,6 +41,12 @@ pub mod rules;
 pub mod scoring;
 pub mod tables;
 pub mod trickplay;
+/// Las formas del JSON que cruzan al navegador.
+///
+/// Vive fuera de `wasm.rs` a propósito: ahí no lo mira ni `cargo test` ni
+/// `cargo clippy --all-targets`, porque está atrás de un `cfg` de target. Acá los
+/// tipos de la frontera tienen tests y los dos clippy los revisan.
+pub mod web_types;
 
 /// Catálogo de las 9.880 manos y helpers de construcción.
 ///
