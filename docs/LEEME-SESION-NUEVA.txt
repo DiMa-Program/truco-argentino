@@ -1,0 +1,296 @@
+================================================================================
+LEEME ANTES DE HACER NADA - SESION NUEVA DESPUES DE FORMATEAR LA PC
+================================================================================
+
+Soy el agente. Este archivo es lo UNICO que se de la sesion anterior. Si estas
+leyendo esto, la PC se formateo y no tengo memoria de nada de lo que se hizo.
+Todo lo que este documento dice es DATO VERIFICADO de antes del formateo, no
+suposiciones.
+
+Decime "lei el leeme" y seguimos.
+
+
+--------------------------------------------------------------------------------
+1. QUIEN ES LEANDRO
+--------------------------------------------------------------------------------
+
+Habla espanol. Escribi TODO en espanol: comentarios, mensajes de error y
+mensajes de commit.
+
+Commits en conventional commits, descripcion en espanol y minuscula:
+
+    fix(advisor): el EV no contaba la rama de perder el partido
+    feat(pwa): flor y truco en pantalla
+    chore: fija LF en todo el repo
+
+Detalle importante que se olvida seguido: ANTES de cada commit corré
+
+    git diff -w --stat
+
+porque hay finales de linea mezclados y sin el -w los numeros no coinciden con
+lo que realmente cambio. Si no coinciden, cambio el fin de linea, no el codigo.
+
+Verificacion: cada repo tiene su propio comando. El del truco es
+
+    node scripts/mirar.mjs
+
+que corre los dos clippy, los tests, el encoding, los sha256 de las tablas y el
+front, y devuelve 13 lineas en vez de 8 KB de ruido.
+
+
+--------------------------------------------------------------------------------
+2. PRIMERO: RECUPERAR EL RESPALDO DEL ESCRITORIO
+--------------------------------------------------------------------------------
+
+En el Escritorio (o donde lo hayas guardado) esta:
+
+    respaldo-antes-de-formatear.zip       41 MB, SIN CONTRASENA
+
+Dentro hay tres cosas:
+
+  env/                      Los 6 archivos .env. NO estan en ningun repo por diseno:
+                            estan en el .gitignore. Copialos de vuelta a la MISMA
+                            carpeta de donde salieron, no todos juntos. El del
+                            backend de boobaa es distinto del de central.
+
+  opencode/                 auth.json (las API keys de google, groq, openai,
+                            opencode y openrouter), opencode.jsonc (la config) y
+                            plugin/tokens.js (el plugin del comando /tokens).
+
+                            A donde va cada uno:
+                              auth.json     ->  ~/.local/share/opencode/
+                              opencode.jsonc -> ~/.config/opencode/
+                              plugin/       -> ~/.config/opencode/plugin/
+
+  commits-sin-pushear/     4 archivos .bundle. Son repos COMPLETOS comprimidos con
+                            todos sus commits, incluso los que nunca se
+                            pushearon. Recuperar uno:
+
+                                git clone CERO.bundle CERO
+                                cd CERO
+                                git remote add origin https://github.com/leandipardodev/CERO.git
+
+                            Es una copia de SEGURIDAD, no el repo de trabajo.
+                            Para trabajar de verdad, clonalo de GitHub y usá el
+                            bundle solo si falta algo.
+
+El zip NO esta cifrado. Es compresion sola. Cuando vuelvas a tener todo, BORRALO.
+Si estuvo en un Drive compartido, ROTA las claves.
+
+
+--------------------------------------------------------------------------------
+3. LOS ONCE REPOS
+--------------------------------------------------------------------------------
+
+Cuenta de GitHub: leandipardodev. El truco es de otra cuenta (DiMa-Program).
+
+  CARPETA                          REMOTO                                  RAMA
+  --------------------------------------------------------------------------------
+  apuntes-facultad                 leandipardodev/apuntes-facultad        main
+  boobaa                           leandipardodev/boobaa (privado)        master
+  ia truco                         leandipardodev/truco-advisor (priv)   master
+  klip                             leandipardodev/proyecto-app-peluqueria master
+  Proyecto peluqueria              leandipardodev/peluqueriaSoftware      main
+  proyectos compartido\CERO        leandipardodev/CERO                    master
+  web logic\tienda-core            leandipardodev/tienda-core             main
+  Default Project\portfolio-windows leandipardodev/portfolio-windows      main
+  Di.X                             leandipardodev/di-x                    master
+  Truco bot di.X\truco-argentino   DiMa-Program/truco-argentino            main
+
+OJO con tres trampas de nombres:
+
+  - "klip" NO es un repo llamado klip: su remoto es proyecto-app-peluqueria.
+  - "ia truco" es truco-advisor, que NO es truco-argentino. Son dos proyectos
+    distintos y parecida: truco-advisor tiene un package.json en UTF-16 que
+    rompia npm (ya lo arregle, esta pusheado).
+  - truco-argentino esta en DiMa-Program, no en leandipardodev.
+
+NationRun.API no tiene remoto. Se decidio que se pierde, no interesa.
+
+Los nombres de carpeta con ESPACIOS (Default Project, proyectos compartido,
+web logic, Truco bot di.X) rompen los comandos: siempre entrecomillados.
+
+
+--------------------------------------------------------------------------------
+4. ESTADO DE CADA REPO AL MOMENTO DEL FORMATEO
+--------------------------------------------------------------------------------
+
+EN GITHUB, todo a salvo (no hace falta nada mas):
+
+  apuntes-facultad    limpio
+  klip                limpio
+  Proyecto peluqueria limpio
+  boobaa              pusheado. 98 archivos guardados: los PDF de docs/ movidos
+                      a docs/pdf/, la carpeta docs/para-inversor/ con 72 ADR y
+                      SPEC, y el SPEC-27 y SPEC-28
+  truco-advisor       pusheado, con el package.json arreglado (ver seccion 5)
+  truco-argentino     pusheado, con la bitacora adentro
+
+SIN PUSHEAR, solo en el disco (estan en el zip, como .bundle):
+
+  CERO               publico. 1 commit sin pushear con componentes de Android,
+                     codigo C# del hub y un video
+  tienda-core        publico. 2 commits sin pushear, uno con las migraciones de
+                     Supabase 0004 a 0008. Son el ESQUEMA de la base: si se
+                     pierden, hay que reescribirlas
+  portfolio-windows  publico. 1 commit sin pushear
+  Di.X               publico. 1 commit sin pushear con los videos renombrados
+
+ESTOS CUATRO SON PUBLICOS. Eso fue una decision consciente: no se pushean solos
+porque son trabajo sin terminar. Revisalos antes de subirlos.
+
+PERDIDO A PROPOSITO:
+
+  - Los videos (~20,9 GB)
+  - NationRun.API
+  - El historial de opencode (10,6 GB, 1010 sesiones). Solo se copiaron las
+    claves y la config, no el historial.
+  - Downloads (91 GB)
+
+
+--------------------------------------------------------------------------------
+5. LO QUE HAY QUE REINSTALAR PARA TRABAJAR
+--------------------------------------------------------------------------------
+
+El truco necesita esto. Sin Rust no compila nada.
+
+  rustup            https://rustup.rs  (o winget install Rustlang.Rustup)
+  target wasm32     rustup target add wasm32-unknown-unknown
+  wasm-bindgen      la version tiene que COINCIDIR con el crate en Cargo.lock.
+                    Antes de instalar, leela:
+
+                        Select-String -Path Cargo.lock -Pattern '^name = "wasm-bindgen"$' -Context 0,2
+
+                    Sola que se va por cargo install:
+
+                        cargo install wasm-bindgen-cli --version <esa> --locked
+
+                    Si la version NO coincide, el .wasm se genera bien y el fallo
+                    aparece en RUNTIME, en un telefono, no en el build. Es el
+                    error mas caro de este proyecto.
+
+  Node              20 o mas. En la maquina anterior era v24.15.0
+  git               y las credenciales de GitHub: gh auth login
+
+VERIFICACION TRAS INSTALAR:
+
+  rustc --version
+  rustup target list --installed
+  wasm-bindgen --version      tiene que coincidir con Cargo.lock
+  node --version
+  gh auth status
+
+
+--------------------------------------------------------------------------------
+6. EL PROYECTO DEL TRUCO EN DETALLE
+--------------------------------------------------------------------------------
+
+Es el proyecto con el que mas se trabajo. Motor de reglas del truco argentino
+1v1 + advisor GTO + PWA offline. Todo el calculo en Rust, la pantalla en
+TypeScript sin framework, la frontera en JSON.
+
+  crates/truco-core   reglas, probabilidad, advisor. Todo el calculo
+  tools/gen-tables   genera los dos .bin que carga la PWA
+  web                la pantalla. Vite + TypeScript
+
+  Esta publicado en:  https://web-zeta-six-54.vercel.app
+  Y en GitHub:        https://github.com/DiMa-Program/truco-argentino
+
+HAY UNA SKILL DEL PROYECTO en .agents/skills/truco-argentino/SKILL.md. Se carga
+sola. Leela primero: tiene el indice de carta, las reglas y los errores ya
+cometidos.
+
+Y dos archivos que valen oro y no estan duplicados en ningun lado:
+
+  AGENTS.md              los hechos verificados del proyecto
+  docs/bitacora.txt      por que se hizo cada cosa y que se descarto
+
+CONTEXTOS QUE NO HAY QUE REDESCUBRIR:
+
+  - El indice de carta es `palo * 10 + rank`. Espadas=0, Bastos=1, Copas=2,
+    Oros=3. Me equivoque tres veces en una sesion con esto.
+  - Los tests van SIEMPRE en release. En debug enumeran 76 millones de pares.
+  - Los DOS clippy son obligatorios:
+        cargo clippy --all-targets --release
+        cargo clippy --release --target wasm32-unknown-unknown -p truco-core -- -D warnings
+    El segundo existe porque wasm.rs esta atras de un cfg y el primero no lo ve.
+  - Los dos .bin son INMUTABLES. Si cambian de sha256, se toco una regla del
+    truco y hay que mirarlo antes de seguir:
+        truco-v1.bin          8c0b0675e072f7402115b9c312f9e1ccc3d3d0169679520ac1372acb49080195
+        envido-policy-v1.bin  904ffe9a46ddd16aa6223e993a2a54a6ab614d6e36ec83facf71b439d4f7c56a
+
+DONDE ESTA LA WEB:
+
+  http://localhost:4173          con npm run preview en web/
+  http://192.168.0.85:4173       desde el celular, en la misma red
+
+COMO VERIFICAR TODO:
+
+  cd truco-argentino
+  node scripts/mirar.mjs
+
+  Eso corre los dos clippy, los 300 tests, el encoding, los sha256, el build, el
+  typecheck, el humo (104) y el scanner (336). Si dice "todo bien", anda.
+
+
+--------------------------------------------------------------------------------
+7. PENDIENTES DEL TRUCO
+--------------------------------------------------------------------------------
+
+EN ORDEN DE PRIORIDAD:
+
+1. PROBAR EN EL TELEFONO. Es lo unico que ninguna prueba automatica ve: el
+   scanner mira el motor, no la pantalla. La PWA anda pero nadie la toco en un
+   dispositivo real.
+
+2. EL DEPLOY AUTOMATICO NO FUNCIONA. El sitio esta subido, pero a mano. El
+   workflow de GitHub Actions (.github/workflows/deploy.yml) construye bien y
+   falla en el ultimo paso porque falta el secreto:
+
+       gh secret set VERCEL_TOKEN
+
+   El token hay que sacarlo de https://vercel.com/account/tokens porque la CLI
+   de Vercel NO puede crearlos (403). El proyecto de Vercel es "web", en el
+   equipo leandipardos-projects.
+
+3. LA FASE DE LA CABECERA. Se agrego una cabecera con la fase, el puntaje y el
+   panel de pensamiento. Falta la seccion de la regla del envido explicada
+   por pasos, y la evaluacion de "chance de ganar" con el marcador.
+
+4. opponent.rs NO SABE CUANTO HAY EN JUEGO. Es el pendiente mas grande del
+   motor: envido_accept_likelihood recibe solo los tantos, asi que "quiero" a un
+   33 vale igual a 2 puntos que a 30. Por eso el advisor optimiza PUNTOS, no la
+   PARTIDA. Si le mostras "chance de ganar" sin arreglar esto, el numero no
+   significa nada.
+
+5. STATE.md quedo viejo (dice 245 tests, son 300).
+
+6. Falta el token de Vercel en el repo, y el dominio propio si lo quiere
+   compartir.
+
+
+--------------------------------------------------------------------------------
+8. LO QUE NO SE DECIDIO
+--------------------------------------------------------------------------------
+
+Estas cosas quedaron planteadas y sin respuesta. Preguntalas si aparecen:
+
+  - Si subir los 4 repos publicos con su trabajo sin terminar, o dejarlos asi.
+  - Si hacer dominio propio para la web del truco.
+  - Si regenerar las claves de los .env o dejarlas como estan. OJO: si el zip
+    estuvo en un Drive compartido, hay que rotarlas SÍ O SÍ.
+  - Que hacer con el historial de opencode que se perdio.
+
+
+--------------------------------------------------------------------------------
+9. LO QUE NO ME PIDI QUE HAGA
+--------------------------------------------------------------------------------
+
+Por si querés que arranque con esto:
+
+  - No subí los 4 repos publicos. Fue decision de Leandro.
+  - No borre los .env de ningun lado: solo los copié al zip.
+  - No roté ninguna clave.
+  - No cree el repo de NationRun.API.
+
+================================================================================
