@@ -183,7 +183,11 @@ function render(): void {
 
   app.innerHTML = "";
 
+  const snap = leerSnapshot();
+
   app.append(
+    seccionFase(),
+    seccionPensamiento(listo),
     seccionRonda(),
     seccionMarcador(),
     seccionConfig(),
@@ -194,6 +198,247 @@ function render(): void {
     seccionRespuesta(listo),
     seccionJuego(listo, deck),
   );
+  if (snap) {
+    // `seccionRival` va al final y se agrega aparte porque necesita el snapshot,
+    // que no existe hasta que hay mano.
+    app.append(seccionRival(snap, deck));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Fase: dónde estamos y qué toca hacer
+// ---------------------------------------------------------------------------
+
+/**
+ * Una fase de la mano: qué falta resolver y qué tiene que hacer el jugador.
+ *
+ * # Por qué la fase vive acá y no en el motor
+ *
+ * Porque el motor NO tiene este estado. La secuencia de cantos, a quién le
+ * toca responder y qué se declaró son de la pantalla: la API del wasm es de
+ * assessor, no de partida. `state.session.messages` guarda los mensajes del
+ * modelo y nada de eso.
+ *
+ * Poner la fase en Rust obligaría a duplicar en el motor un estado que la
+ * pantalla ya tiene, y las dos copias se contradirían. Acá se deriva de los
+ * hechos que ya están, y se muestra en un solo lugar.
+ */
+type Fase = { titulo: string; queHaces: string; paso: number; de: number };
+
+/** El snapshot del motor, o `null` si todavía no hay mano. */
+function leerSnapshot(): Snapshot | null {
+  if (estado.mano.length !== 3) return null;
+  try {
+    return motor.snapshot;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * La fase actual.
+ *
+ * El orden importa: la primera que se cumple es la que manda. Flor antes que
+ * envido porque la flor es **obligada** y **anula** el envido: si tenés flor y
+ * no la cantás, el envido que viene abajo no vale.
+ *
+ * Solo se derivan fases que la pantalla puede saber de verdad. No se inventa una
+ * de "declarar el tanto" porque el motor no expone si el envido se aceptó, y una
+ * fase que aparece y desaparece por un dato que no tenés es peor que no tenerla.
+ */
+function faseActual(listo: boolean, snap: Snapshot | null): Fase {
+  const de = 4;
+
+  if (estado.rondaCerrada) {
+    return {
+      titulo: "Ronda terminada",
+      queHaces: "Cerrá la ronda: el que ganó reparte la que sigue.",
+      paso: de,
+      de,
+    };
+  }
+  if (!listo) {
+    return {
+      titulo: "Tu mano",
+      queHaces: "Tocá tus tres cartas para que el motor pueda pensar.",
+      paso: 1,
+      de,
+    };
+  }
+  if (snap?.cantos.flor_pendiente) {
+    return {
+      titulo: "Flor",
+      queHaces: "Tenés flor: es obligatoria y anula el envido. Cantala ahora.",
+      paso: 2,
+      de,
+    };
+  }
+  if (estado.respondiendo) {
+    return {
+      titulo: "Respondé",
+      queHaces: "El rival cantó. Decidí qué hacés con ese canto.",
+      paso: 3,
+      de,
+    };
+  }
+  return {
+    titulo: "Tu jugada",
+    queHaces: "Mirá el consejo y jugá una carta.",
+    paso: de,
+    de,
+  };
+}
+
+/**
+ * La cabecera: la fase, el puntaje siempre a la vista y el razonamiento.
+ *
+ * Es la respuesta a "que no se vea sucia". Antes la pantalla mostraba las nueve
+ * secciones juntas: la ronda, el marcador, la config, la mano, las
+ * observaciones, los cantos, el consejo, la respuesta y el juego. Con nueve
+ * bloques a la vez no se sabe cuál mirar.
+ *
+ * Acá va **una sola vez** arriba: en qué fase estás y qué toca hacer. Abajo
+ * siguen estando todas las secciones, pero la activa es la que corresponde a la
+ * fase, y las demás quedan para cuando llegues.
+ */
+function seccionFase(): HTMLElement {
+  const caja = section("fase");
+  const listo = estado.mano.length === 3;
+  const f = faseActual(listo, leerSnapshot());
+
+  const cabeza = el("div", "fase-cabeza");
+  cabeza.append(
+    el("span", "fase-paso", `${f.paso} de ${f.de}`),
+    el("h1", "fase-titulo", f.titulo),
+    el("p", "fase-que", f.queHaces),
+  );
+  caja.append(cabeza);
+
+  // El puntaje va pegado a la fase y no en una sección aparte más abajo: es el
+  // número que uno mira siempre y no debería tener que buscarlo.
+  const marc = marcadorBazas();
+  const puntaje = el("div", "fase-puntaje");
+  puntaje.append(
+    el("span", "puntaje-yo", `${estado.puntosMios}`),
+    el("span", "puntaje-sep", "-"),
+    el("span", "puntaje-el", `${estado.puntosSuyos}`),
+    el("span", "puntaje-bazas", `bazas ${marc.mias}-${marc.suyas}`),
+  );
+  caja.append(puntaje);
+
+  return caja;
+}
+
+/**
+ * Lo que está pensando la IA, en una línea por estado.
+ *
+ * Reusa `Advice.reasons` en vez de inventar una segunda explicación: si el
+ * panel dijera una cosa y el consejo otra, con el tiempo alguno de los dos deja
+ * de actualizarse y nadie se entera. Una sola fuente.
+ */
+function seccionPensamiento(listo: boolean): HTMLElement {
+  const caja = section("pensamiento");
+  caja.append(el("h2", "titulo-seccion", "Qué está pensando"));
+
+  const snap = leerSnapshot();
+  if (!listo || !snap) {
+    caja.append(el("p", "nota-belief", "Todavía no hay mano tuya."));
+    return caja;
+  }
+
+  let consejo: Advice;
+  try {
+    consejo = motor.advice;
+  } catch {
+    caja.append(el("p", "nota-belief", "El motor todavía no calculó nada."));
+    return caja;
+  }
+
+  const f = faseActual(listo, snap);
+  const linea = el("p", "pensamiento-linea");
+
+  if (f.titulo === "Flor") {
+    linea.textContent = snap.has_flor
+      ? "Tenés flor. Es obligatoria: anula el envido."
+      : "El rival puede tener flor.";
+  } else if (f.titulo === "Respondé") {
+    const accion =
+      consejo.recommended === "callarse"
+        ? "mejor rechazar el canto"
+        : `responder ${consejo.recommended}`;
+    linea.textContent = `Recommienda ${accion}.`;
+  } else if (f.titulo === "Tu jugada") {
+    const accion =
+      consejo.recommended === "callarse"
+        ? "mejor callarse"
+        : `cantar ${consejo.recommended}`;
+    linea.textContent =
+      `Recommienda ${accion}` +
+      (consejo.recommended !== "callarse" ? ` declarando ${consejo.declared}.` : ".");
+  } else {
+    linea.textContent = "Esperando.";
+  }
+  caja.append(linea);
+
+  // El porqué es `reasons` del motor, no una segunda explicación escrita aparte:
+  // dos paneles de razonamiento con el tiempo dejan de coincidir y nadie avisa.
+  if (consejo.reasons.length > 0) {
+    const lista = el("ul", "razones");
+    for (const razon of consejo.reasons) lista.append(el("li", "", razon));
+    caja.append(lista);
+  }
+
+  return caja;
+}
+
+/**
+ * Qué cartas puede tener el rival, con su probabilidad.
+ *
+ * NO es "la mano del rival": es lo que la belief todavía considera posible, con
+ * su masa. Por eso se muestra con porcentajes y no como una lista cerrada.
+ * Cuando queda una sola, `exacto` lo dice y ahí sí se puede afirmar.
+ */
+function seccionRival(snapshot: Snapshot, deck: CardInfo[]): HTMLElement {
+  const caja = section("rival");
+  caja.append(el("h2", "titulo-seccion", "Qué puede tener el rival"));
+
+  if (snapshot.rival_top.length === 0) {
+    caja.append(el("p", "nota-belief", "Sin mano tuya no hay nada que inferir."));
+    return caja;
+  }
+
+  const primera = snapshot.rival_top[0];
+  if (snapshot.exacto && primera) {
+    const cartas = primera.cartas
+      .map((indice) => deck[indice]?.name ?? "?")
+      .join(", ");
+    caja.append(el("p", "rival-exacto", `Ya está determinado: ${cartas}.`));
+    return caja;
+  }
+
+  caja.append(
+    el(
+      "p",
+      "nota-belief",
+      `Siguen ${snapshot.belief_size} manos en pie. Estas son las más probables:`,
+    ),
+  );
+
+  const lista = el("ul", "rival-manos");
+  for (const mano of snapshot.rival_top) {
+    const item = el("li", "rival-mano");
+    const cartas = mano.cartas
+      .map((indice) => deck[indice]?.name ?? "?")
+      .join(" · ");
+    item.append(
+      el("span", "rival-cartas", cartas),
+      el("span", "rival-p", `${(mano.p * 100).toFixed(1)} %`),
+    );
+    lista.append(item);
+  }
+  caja.append(lista);
+
+  return caja;
 }
 
 /**

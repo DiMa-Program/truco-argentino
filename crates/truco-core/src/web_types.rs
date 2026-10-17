@@ -49,8 +49,26 @@ pub struct Snapshot {
     pub concentration: f64,
     /// Tantos declarados por el rival, si declaró.
     pub declared: Option<u8>,
+    /// Las manos más probables del rival, con su probabilidad.
+    ///
+    /// No es "la mano del rival": es lo que la belief todavía considera posible.
+    /// Por eso van con su masa y no como lista cerrada. Cuando solo queda una,
+    /// `exacto` dice que ya se sabe.
+    pub rival_top: Vec<ManoProbable>,
+    /// `true` si la mano del rival ya está determinada con certeza.
+    pub exacto: bool,
     /// Flor y truco, que la pantalla los pinta aparte.
     pub cantos: CantosJson,
+}
+
+/// Una mano que el rival podría tener, con su probabilidad.
+#[derive(Serialize, Deserialize, TS)]
+#[ts(export, export_to = "tipos/")]
+pub struct ManoProbable {
+    /// Las tres cartas, con el mismo índice de 0 a 39 que usa el resto de la UI.
+    pub cartas: [u8; 3],
+    /// Probabilidad de que tenga esta mano exacta, de 0 a 1.
+    pub p: f64,
 }
 
 /// El canto de flor y la escalera del truco, como los necesita la UI.
@@ -213,6 +231,8 @@ mod tests {
             belief_size: 7770,
             concentration: 0.0,
             declared: None,
+            rival_top: Vec::new(),
+            exacto: false,
             cantos: cantos_de_prueba(),
         };
         let json = serde_json::to_string(&s).expect("serializa");
@@ -230,6 +250,8 @@ mod tests {
             "belief_size",
             "concentration",
             "declared",
+            "rival_top",
+            "exacto",
             "cantos",
         ] {
             assert!(json.contains(&format!("\"{campo}\"")), "falta el campo {campo} en {json}");

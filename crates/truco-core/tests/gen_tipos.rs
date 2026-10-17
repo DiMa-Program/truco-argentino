@@ -27,7 +27,7 @@
 
 use std::path::{Path, PathBuf};
 
-use truco_core::web_types::{AdviceJson, Snapshot};
+use truco_core::web_types::{AdviceJson, ManoProbable, Snapshot};
 use ts_rs::{Config, TS};
 
 /// Los ocho tipos de la frontera.
@@ -35,10 +35,11 @@ use ts_rs::{Config, TS};
 /// La lista es explícita a propósito: si alguien saca un `#[ts(export)]` sin
 /// querer, este test se da cuenta en vez de que la pantalla deje de compilar
 /// tres commits después.
-const ESPERADOS: [&str; 8] = [
+const ESPERADOS: [&str; 9] = [
     "AdviceJson.ts",
     "CantosJson.ts",
     "CardJson.ts",
+    "ManoProbable.ts",
     "OptionJson.ts",
     "PlayJson.ts",
     "ResponseJson.ts",
@@ -47,7 +48,7 @@ const ESPERADOS: [&str; 8] = [
 ];
 
 #[test]
-fn los_ocho_tipos_se_generan() {
+fn los_nueve_tipos_se_generan() {
     // El `#[ts(export)]` genera un test por tipo dentro del crate, y ese test
     // corre solo. El `export_all` de aca es el que garantiza que existan aunque
     // alguien los borre a mano.
@@ -58,9 +59,15 @@ fn los_ocho_tipos_se_generan() {
     // terminaban en `crates/truco-core/bindings/`, que es el error que se cometió
     // la primera vez.
     std::env::set_var("TS_RS_EXPORT_DIR", ruta_raiz().join("web/src"));
-    let cfg = Config::default();
+    // `from_env` y no `default`: la ruta de salida la lee SOLO `from_env`, que es el
+    // unico que mira `TS_RS_EXPORT_DIR`. Con `default` el `set_var` de arriba no
+    // hacia nada y los `.ts` caian en `crates/truco-core/bindings/`, que es donde
+    // la pantalla no los ve. Un `build.rs` con `cargo:rustc-env` no lo arregla:
+    // eso define una variable de COMPILACION, y ts-rs la lee en tiempo de corrida.
+    let cfg = Config::from_env();
     AdviceJson::export_all(&cfg).expect("exporta AdviceJson y sus dependencias");
     Snapshot::export_all(&cfg).expect("exporta Snapshot y sus dependencias");
+    ManoProbable::export_all(&cfg).expect("exporta ManoProbable y sus dependencias");
 
     for nombre in ESPERADOS {
         let ruta = ruta_raiz().join("web/src/tipos").join(nombre);
@@ -108,6 +115,8 @@ fn un_snapshot_completo_se_puede_deserializar() {
         "belief_size": 7770,
         "concentration": 0.1,
         "declared": null,
+        "rival_top": [{ "cartas": [0, 1, 2], "p": 0.31 }],
+        "exacto": false,
         "cantos": cantos_completos()
     });
     let s: Snapshot = serde_json::from_value(json).expect("el snapshot tiene la forma que dice el tipo");
@@ -139,6 +148,8 @@ fn un_campo_que_rust_no_conoce_pasa_desapercibido() {
         "belief_size": 7770,
         "concentration": 0.1,
         "declared": null,
+        "rival_top": [{ "cartas": [0, 1, 2], "p": 0.31 }],
+        "exacto": false,
         "cantos": cantos_completos()
     });
     json.as_object_mut()

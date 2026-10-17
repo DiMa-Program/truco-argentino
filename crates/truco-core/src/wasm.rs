@@ -37,7 +37,8 @@ use crate::opponent::{OpponentModel, PlayContext};
 use crate::scoring::{MatchConfig, Score};
 use crate::tables::Tables;
 use crate::web_types::{
-    AdviceJson, CantosJson, CardJson, OptionJson, PlayJson, ResponseJson, ResponseOptionJson, Snapshot,
+    AdviceJson, CantosJson, CardJson, ManoProbable, OptionJson, PlayJson, ResponseJson, ResponseOptionJson,
+    Snapshot,
 };
 use wasm_bindgen::prelude::*;
 
@@ -683,6 +684,12 @@ impl Truco {
             belief_size: belief.n(),
             concentration: belief.concentration(),
             declared: self.declarado,
+            rival_top: belief
+                .top_hands(5)
+                .into_iter()
+                .map(|(mano, p)| ManoProbable { cartas: mano.indices(), p })
+                .collect(),
+            exacto: belief.is_exact(),
             cantos: self.cantos_json(hand),
         })
     }

@@ -15,6 +15,7 @@
 export type { AdviceJson } from "./AdviceJson";
 export type { CantosJson } from "./CantosJson";
 export type { CardJson } from "./CardJson";
+export type { ManoProbable } from "./ManoProbable";
 export type { OptionJson } from "./OptionJson";
 export type { PlayJson } from "./PlayJson";
 export type { ResponseJson } from "./ResponseJson";
