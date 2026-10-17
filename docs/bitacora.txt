@@ -1,0 +1,788 @@
+================================================================================
+TRABAJO DE LA SESION - LEANDRO
+================================================================================
+
+Proyecto   : truco argentino 1v1 - motor + advisor GTO + PWA offline
+Carpeta    : C:\Users\leand\Documentos\Truco bot di.X\truco-argentino
+GitHub     : https://github.com/DiMa-Program/truco-argentino (privado)
+Rama       : feat/flor-truco-ui   (nueva, NO commiteada, NO pusheada)
+Arranque   : 9b3dc1d  (15/10 01:42)  "docs: actualiza STATE.md..."
+
+Objetivo de la sesion: tomar el repo, verificar que estaba sano, arreglar los dos
+problemas que aparecieron al verificar, y cerrar tres de los cuatro pendientes
+que dejo la sesion de Martin.
+
+No se toco ninguna regla del truco, ni el motor de tablas, ni el solver, ni la
+policy. Los sha256 de los dos .bin siguen siendo los de siempre:
+  truco-v1.bin          8c0b0675...80195   (1.924.152 bytes)
+  envido-policy-v1.bin  904ffe9a...7c56a   (  195.862 bytes)
+Eso esta VERIFICADO, no supuesto: se regeneraron con gen-tables y se compararon.
+
+
+================================================================================
+1. QUE TAL ESTABA EL REPO AL LLEGAR
+================================================================================
+
+Cloneo, verificado de punta a punta:
+
+  cargo test --release ..................... 245 / 245 verdes
+  cargo clippy --all-targets --release .... 1 warning
+  cargo clippy --target wasm32 ............ FALLA (exit 101)
+  node scripts/check-encoding.mjs .......... limpio, 28 archivos
+  cargo run --release -p gen-tables ....... invariantes OK, 31 s
+  sha256 de los .bin ...................... identicos a los documentados
+  npm run verify .......................... EXIT 0 (humo 39/39, scanner 291/0)
+  git status .............................. arbol limpio
+
+O sea: la app andaba. Los problemas eran de higiene y estaban escondidos.
+
+
+================================================================================
+2. LOS DOS HALLAZGOS QUE ARREGLE
+================================================================================
+
+HALLAZGO 1 - wasm.rs: `fn avance` era codigo muerto, y rompia el clippy de wasm
+
+  Era el unico error real. `cargo clippy --release --target wasm32-unknown-unknown
+  -p truco-core -- -D warnings` daba exit 101 con "function `avance` is never
+  used".
+
+  Que era: la validacion de "cuantas bazas lleva cada uno". La escribio el
+  commit 4653254 para que la app no se colgara con combinaciones imposibles
+  (1-2, 2-1, 2-2). El commit e9a836d la dejo sin uso cuando reemplazo los tres
+  contadores sueltos por el historial unico de bazas. Se sobrevive porque
+  `cargo clippy --all-targets` NO la ve: wasm.rs esta atras de un
+  `#[cfg(target_arch = "wasm32")]`.
+
+  Se borro la funcion. El comentario que la describia ("antes se colgaba con
+  1-2, 2-1 y 2-2") ya no describia nada porque ese bug lo arreglo justo el
+  commit que la dejo muerta.
+
+  POR QUE NO LO VIO NADIE: STATE.md dice que "los dos clippy son obligatorios".
+  No es cierto desde e9a836d. Alguien corrio el nativo, que no ve esa parte, y
+  dio por hecho que habia corrido los dos. Es exactamente el modo de falla que
+  el propio proyecto ya documento: no es que falte un test, es que el chequeo
+  que mira el lugar equivocado da verde igual.
+
+HALLAZGO 2 - tools/gen-tables/src/main.rs:242: lint `manual_range_contains`
+
+  `call_mass < 0.02 || call_mass > 0.98`  ->  `!(0.02..=0.98).contains(&call_mass)`
+
+  Cosmético. Es un lint nuevo: el clippy local es 0.1.95 (abril 2026) y el de
+  la maquina de Martin era anterior. El archivo es de 4cb73d7, del dia 13.
+
+
+================================================================================
+3. PENDIENTE 4 - FINALES DE LINEA
+================================================================================
+
+Este era el pendiente que Martin dejo para un commit aparte y con razon: es
+ruido puro.
+
+Lo que habia (git ls-files --eol, indice):
+  LF ................. la mayoria
+  CRLF ............... STATE.md, envido_solver.rs, opponent.rs, trickplay.rs
+  MIXED ............. belief.rs   <-- esto no estaba documentado
+
+Ademas faltaba lo importante: no habia `.gitattributes`. Con
+`core.autocrlf=true` (el default de Windows), cualquier maquina que clone esto
+convierte TODO el working tree a CRLF. Editar un archivo que era LF desde
+Windows mete CRLF y el diff se infla. Es el error que le paso DOS VECES a
+Martin en su sesion.
+
+Que se hizo:
+  1. Se creo `.gitattributes` con `* text=auto eol=lf`.
+     `text=auto` deja que git detecte los binarios y no los toque.
+     `eol=lf` fuerza LF tambien en el working tree de Windows, que es
+     exactamente donde nacia el problema.
+  2. `git add --renormalize .` paso los 5 archivos a LF en el indice.
+
+El resultado, medido:
+  git diff --stat ........ 5.000 lineas de cambios
+  git diff -w --stat .... 1.695 lineas, que son las de este trabajo de verdad
+
+O sea: 3.305 lineas de ruido, con las mismas palabras. Es la demostracion
+numerica del aviso de STATE.md.
+
+
+================================================================================
+4. PENDIENTE 3 - FLOR Y TRUCO EN LA PANTALLA
+================================================================================
+
+Que faltaba: la pantalla tenia UN aviso de texto ("tenes flor, es obligada").
+Ni un boton, ni un estado, ni una regla. Todo el canto estaba en
+`match_state.rs`, que la PWA no usa porque necesita las dos manos y en 1v1 no
+se conoce la del rival.
+
+DECISION DE DISENO (lo importante)
+
+La logica NO fue a `wasm.rs`. wasm.rs esta atras de un cfg: ni `cargo test` ni
+`cargo clippy --all-targets` la ven. Si la regla de la flor viviera ahi, un
+error se descubre jugando, que es la forma mas cara de descubrirlo.
+
+Fue a un modulo nuevo, `crates/truco-core/src/canto.rs`: testeable en nativo,
+revisado por los dos clippy, con 22 tests propios. `wasm.rs` quedo siendo lo que
+ya era: un traductor a JSON.
+
+QUE SE IMPLEMENTO
+
+Flor base (NO contraflor, a proposito):
+  - El interruptor "se juega con flor". Apagado, la pantalla no muestra nada de
+    flor y todo sigue igual. Es lo que permite jugar en una mesa donde la flor
+    no se canta.
+  - Flor sola: 3 puntos al que la canta, en el acto.
+  - Envite de flores (cuando los dos tienen): "con flor quiero" da 4 puntos a la
+    flor mas alta, con el empate yendo al mano; "flor me achico" da 3 al que
+    canto, gane o pierda la comparacion.
+  - La flor pendiente ANULA el envido. Es obligada. Ademas el consejo de envido
+    lo dice explicitamente en la primera razon, para que la app no se haga la
+    boluda.
+
+Truco:
+  - La escalera entera: truco (2) / retruco (3) / vale cuatro (4), con los
+    puntos del "no quiero" (1 / 2 / 3).
+  - Solo se sube de a un escalon, y del vale cuatro no se pasa.
+  - Solo el que acepto el canto anterior puede subir.
+
+LO QUE EL SCANNER ENCONTRO (esto es lo bueno)
+
+Los dos primeros intentos quedaron con estados MUERTOS y los tests los clavaron:
+
+  a) `answerFlor` no podia modelar que CANTA EL RIVAL. El motor fijaba "yo" como
+     respondedor del envite, asi que el unico camino posible era "cante yo" y
+     nunca podia contestar nadie. Se cambio a `callFlor(iCalled, rivalHasFlor)`.
+
+  b) `callTruco` / `answerTruco` tenian el mismo problema, y peor: la escalera
+     se trunca en el primer canto. No habia forma de registrar que el rival
+     contesta MI canto, asi que de "cante truco" no se pasaba nunca al vale
+     cuatro. Se cambio a `callTruco(iCalled)` y `answerTruco(choice, iAnswer)`.
+
+  c) `answerFlor` aceptaba flores IMPOSIBLES. Un 0 o un 255 de la UI llegaban
+     hasta el envite y se repartian los puntos comparando una flor que no
+     existe. Se agrego `valor_flor()` con el rango 20..=38, igual que ya
+     existía `tanto_declarado()` para los tantos del envido. ESTE LO ENCONTRO EL
+     SCANNER, no la intuicion.
+
+  d) `TrucoState::responder` dejaba responderse a uno mismo. Se agrego el guard:
+     si `cantante == lado`, error.
+
+
+================================================================================
+5. PENDIENTE 2 - CERRAR LA BAZA CON PRUEBAS
+================================================================================
+
+El flujo de "cerrá la baza" es nuevo y lo unico que lo cubria eran los tests de
+Rust del modulo advisor. Ahora tambien esta cubierto del lado del navegador:
+
+  - cerrar una baza achica la belief
+  - la carta ya jugada no vuelve a aparecer como salida
+  - deshacer devuelve la belief EXACTAMENTE al punto de partida (7.770)
+  - no se puede jugar dos veces la misma carta
+  - no se puede registrar una carta que no tenes
+
+
+================================================================================
+6. UN BUG EN EL SCANNER QUE NO ESTABA EN LA LISTA
+================================================================================
+
+`web/scripts/scan.mjs`, funcion `liber()`:
+
+    function liberar(m) {
+      try {
+        liberar(m);        // <-- se llamaba a SI MISMA
+      } catch { }
+    }
+
+Se llamaba a si misma en vez de a `m.free()`. La recursion infinita tiraba
+"Maximum call stack size exceeded", que el `catch` se comia. Resultado: el
+scanner pasaba limpio y NUNCA liberaba un motor. Casi 2 MB de tabla por caso,
+todas las pruebas juntas: el scanner estaba testeando con toda la maquina
+llena de memoria de motores que ya no existen.
+
+Es el mismo tipo de error que el que el reporte de Martin marca como
+"la prueba de humo daba 39/39 con la app rota de punta a punta": un chequeo que
+mide lo que no es.
+
+
+================================================================================
+7. ERRORES PROPIOS DE ESTA SESION
+================================================================================
+
+Quedan anotados, como los de Martin.
+
+a) ESCRIBI RAPIDO Y SALIO BASURA
+   Cuatro veces me quedaron strings con palabras inventadas o codigo roto:
+   un `//vacio` suelto, un `who's lo canto` en un mensaje de error, un nombre de
+   funcion con tilde, un `if (t.truco_aceptado_por_mi)` sobre un campo que no
+   existe. Todos los compilar los agarraron y se corrigieron, pero la cantidad
+   dice que habia que leer lo que se escribe antes de moverlo.
+
+b) ME EQUIVOQUE CON LA ESCALERA DEL TRUCO
+   A mitad de camino mire `points_if_accepted()` (truco 2, retruco 3, vale
+   cuatro 4), me parecio el clasico 2/4/8, yiba a reportarlo como un bug
+   GRAVE de puntaje. Se verifique con la regla antes de decir nada: el truco
+   argentino es 1/2/3/4 y el motor estaba bien. Casi se reporta un bug que no
+   existe. La leccion de Martin ("mirar dos veces, verificar con la maquina")
+   es de las pocas que hay que repetir.
+
+c) UN CHECK QUE DABA FALLA CON EL VALOR EN `true`
+   Una comprobacion de humo fallaba mostrando en el detalle
+   `"truco_aceptado": true`. Era un artefacto de una edicion anterior del
+   archivo, no no-determinismo del wasm: se confirmo corriendo 3 veces seguidas
+   con la forma nueva. Se dejo igual, que ademas se lee mejor.
+
+d) SE ME OLVIDO EL LADO DEL QUE RESPONDE
+   Case la escalera del truco en el diseno y empece a construirla. La prueba de
+   humo la agarro: tras "subir" el estado ya queda con un canto en el aire, y un
+   `callTruco` en el medio es un error. "Subir" ya ES "quiero + subo", es
+   atomico.
+
+
+================================================================================
+8. LO QUE NO SE TOCO
+================================================================================
+
+  - Las reglas del truco: ni una.
+  - La escalera del truco y sus puntos: ni una linea.
+  - El motor de las tablas: ni una linea.
+  - Las tablas precomputadas: mismos sha256, verificado.
+  - El solver del envido: ni una linea.
+  - La policy de equilibrio: ni una linea.
+  - Las 15 clases de fuerza, el catalogo, el perfilado: nada.
+  - La maquina de estados de `match_state.rs`: no se toco. Sigue siendo la
+    correcta para una partida de verdad.
+
+
+================================================================================
+9. RESULTADO FINAL VERIFICADO
+================================================================================
+
+  Pruebas de Rust .............. 267 verdes, 0 falladas   (245 antes, +22)
+  Clippy (motor de juego) ...... limpio, 0 avisos        (1 antes)
+  Clippy (motor de navegador) ... limpio, 0 avisos        (FALLABA antes)
+  TypeScript ................... limpio
+  check-encoding ............... limpio, 29 archivos
+  Prueba de humo ............... 87 de 87                 (39 antes)
+  Scanner de robustez .......... 336 pruebas, 0 fallos   (291 antes)
+  Tabla de probabilidades ...... sha256 8c0b0675...80195  (sin cambios)
+  Tabla de equilibrio .......... sha256 904ffe9a...7c56a  (sin cambios)
+  npm run verify ............... EXIT 0
+
+  Archivos: 2 nuevos, 8 modificados (+1 renormalizacion).
+  1.695 lineas de contenido real.
+
+
+================================================================================
+10. QUE QUEDA PENDIENTE
+================================================================================
+
+  1. PROBAR EN EL TELEFONO. Sigue siendo lo mas importante y no se puede hacer
+     desde una maquina. El scanner mira el MOTOR, no la pantalla: no ve si un
+     boton queda apretado a la mitad ni si el telefono baja la version nueva.
+
+  2. Probar el flujo de "cerrá la baza" en un dispositivo real. Ahora tiene
+     pruebas, pero las pruebas no son la mesa.
+
+  3. La contraflor y la contraflor al resto. Se difirio a proposito: en 1v1 los
+     dos tienen flor en el ~0,24 % de las manos. Cuando se agregue, va en
+     `canto.rs` al lado del envite, que es el mismo mecanismo.
+
+  4. Faltan los DOCS. STATE.md todavia dice "245 tests", "39/39 de humo" y
+     "291 del scanner", y el modulo `canto.rs` no esta en la tabla de modulos.
+     No se toco STATE.md a proposito: es lo primero que hay que leer antes de
+     decidir si las cifras nuevas son las que uno quiere.
+
+  5. Ajustar los pesos del modelo del rival con partidas reales. Es la mayor
+     ganancia pendiente del proyecto y no se toco.
+
+
+================================================================================
+11. COMO SE CORRE
+================================================================================
+
+  cd C:\Users\leand\Documentos\Truco bot di.X\truco-argentino\web
+  npm install                  (solo la primera vez)
+  npm run build
+  npm run preview              -> http://<tu-ip>:4173
+
+  La carpeta tiene punto y espacio. `git clone` y `npm` lo aguantan, pero si
+  algo falla con paths raros, es por eso: el propio repo ya tiene una trampa
+  registrada con `shell: true` partiendo argumentos.
+
+================================================================================
+12. SESION 2 (15/10) - EL EV NO CONTABA LA RAMA DE PERDER
+================================================================================
+
+Como arrancar: "me estas diciendo que cante falta envido con 24, es jugadisimo
+si fallo pierdo la partida". Con un 24 a 0-0 el motor recomendaba falta envido,
+EV +7.97, etiqueta "firme". Con un 24 a 25-0 daba +1.83 contra +1.34 del real
+envido: +0,49 puntos a cambio de un 14 % de perder un partido que estabas
+ganando 25-0.
+
+
+12.1 ME EQUIVOQUE Y ME CORRIJI (primero)
+
+Lo reporté como bug grave de puntaje y estaba mal. Escribi que "la cuenta real
+da -1,55". Volví a hacerlo bien:
+
+Perder una falta que cierra el partido no es "perder 30 puntos": es TERMINAR LA
+PARTIDA EN 0, contra los ~15 puntos que se siguen acumulando. El costo relativo
+es ~15, no 30. Con esa correccion la cuenta da +2 a +3, sigue positiva, y la
+RECOMENDACION NO SE DA VUELTA.
+
+O sea: el motor probablemente tenia razon en recomendar la falta envido. Lo que
+estaba mal era el numero que mostraba (+7.97 en vez de +3.5), no la decision.
+
+Que la primera vez que mire algo raro no lo haya verificado con la maquina antes
+de reportarlo, y el unico chequeo de la sesion anterior. El modo de falla es el
+mismo que el del commit 53acfbf, que se llevo dos EVs Positive: el codigo y el
+test coincidian en estar mal.
+
+
+12.2 EL BUG REAL: TRES FORMULAS, TRES TRATAMIENTOS DE "PERDER"
+
+  ev_of_call     apertura, cantohonesto   perder = 0            subestima
+  best_bluff     apertura, bluffs         desaparecer           ROTO
+  ev_aceptar     respuesta a un canto     perder = -puntos      correcto
+
+El caso demostrable, con la salida real del motor:
+
+  envido:        EV +0.98 · te aceptan el 2 % ·  2 en juego · mintiendo 33
+  real envido:   EV +0.98 · te aceptan el 2 % ·  3 en juego · mintiendo 33
+  falta envido:  EV +0.98 · te aceptan el 2 % · 30 en juego · mintiendo 33
+
+LOS TRES IGUALES. Bluffear la falta envido (y perder la partida) daba
+exactamente lo mismo que bluffear el envido (y perder 2 puntos).
+
+La causa, en advisor.rs:
+
+    let effective_win = if is_bluff { 0.0 } else { p_win };
+    let ev = p_want * effective_win * points + (1.0 - p_want) * declined;
+
+Con effective_win = 0 el termino `* points` desaparece de la ecuacion entera.
+El tamano de la apuesta dejaba de importar para el bluff.
+
+Lo que lo salvaba era de CASUALIDAD: los tres empataban exacto, sort_by es
+estable, y el orden de iteracion [Envido, Real, Falta] hacia ganar el mas
+barato. Si manana cambia un declined o el orden, el motor pasa a recomendar
+bluffear la falta envido y nadie se entera. Es una bomba, no un bug visible.
+
+
+12.3 LO QUE SE ARREGLO
+
+1. ev_of_call: tres ramas en vez de dos.
+
+     EV = P(acepta) · [ P(gano) · puntos − P(perdo) · costo_de_perder ]
+         + (1 − P(acepta)) · lo_del_no_querer
+
+2. best_bluff: el bluff ahora PAGA el tamano de la apuesta.
+
+3. ev_aceptar: el mismo termino, con la escala de la ruta de respuesta (donde el
+   cero es el centro y las dos ramas estan en la misma moneda).
+
+4. confidence: dejo de mirar el tamaño del EV.
+
+5. Salio a la pantalla: `risk_match`, con el aviso arriba de todo.
+
+RESULTADO, con los mismos numeros:
+
+  caso                      antes      ahora
+  24 a 0-0, honesto        +7.97      +3.56
+  bluff a 2 puntos         +0.98      +0.98   (sin cambio, correcto)
+  bluff a 30 puntos        +0.98      +0.49   (ya no es lo mismo)
+
+
+12.4 LA CONFIANZA, QUE ERA LO MAS FINO
+
+Primero intente que CUALQUIER canto que cerrara el partido no fuera "firme". Rompi
+un test existente: con 33 a 0-0 el motor daba "empate", cuando perdes la partida
+el 2 % de las veces y eso es una jugada excelente.
+
+El criterio correcto no es "cierra la partido" sino CUANTO:
+
+    riesgo_de_partido = P(me aceptan) · P(perdo el canto)
+
+que es cero para todo canto que no cierra, y da el numero real. Con 33 da 2 %, con
+24 da 14 %. Con el umbral en 8 %:
+
+  33 a 0-0  -> riesgo  2 %  -> "firme"
+  24 a 0-0  -> riesgo 14 %  -> "empate"
+
+El motor sigue recomendando la falta envido en los dos casos. Lo que cambio es que
+ya no dice "firme" cuando no corresponde.
+
+
+12.5 UN BUG DE LA SESION 1, ENCONTRADO DE PASO
+
+`scan.mjs` tenia `liber(m)` llamando a si misma. Ya lo habia arreglado.
+
+NUEVO: el doc de `AdviceJson` en wasm.rs decia que `recommended` era
+`"falta-envido"` con guion, y el motor manda `"falta envido"` con espacio. El
+contrato escrito y el real no coincidian, y nadie lo habia notado en meses porque
+nadie comparaba el doc con la salida. Hay dos convenciones vivas en el archivo
+(`move_label` con espacios para apertura, `response_move_label` con guiones para
+respuesta) y el doc describia la equivocada.
+
+
+12.6 AUDITORIA ADVISOR vs SOLVER: LIMPIA
+
+El solver (Fase 3) NO tenia el bug: `value_accept` pondera las dos ramas, y por eso
+su umbral sube con el tamano de la falta (0,40 con falta 5, 0,50 con falta 30).
+El advisor es otro camino al mismo numero y era el que se leia en la pantalla.
+
+Se compararon los dos en el caso que motivo el reclamo y en la respuesta a cantos:
+
+  caso                advisor              solver            coinciden
+  24 a 0-0, apertura  falta envido +3.56   falta envido     si
+  33 a 0-0, resp. 31  subo a falta +24.24  —               si
+  27 a 0-0, resp. 31  no quiero            —               si
+
+POST ARREGLO NO HAY DISCREPANCIA. No aparecieron mas casos de este tipo.
+
+
+================================================================================
+13. RESULTADO FINAL SESION 2
+================================================================================
+
+  Pruebas de Rust .............. 275 verdes, 0 falladas  (273 antes, +2)
+  Clippy (motor de juego) ...... limpio
+  Clippy (motor de navegador) ... limpio
+  check-encoding ............... limpio, 29 archivos
+  Prueba de humo ............... 97 de 97               (87 antes)
+  Scanner de robustez .......... 336 pruebas, 0 fallos   (sin cambio)
+  npm run verify ............... EXIT 0
+  Tabla de probabilidades ...... sha256 8c0b0675...80195  (SIN cambios)
+  Tabla de equilibrio .......... sha256 904ffe9a...7c56a  (SIN cambios)
+
+  Reglas del truco, motor de tablas, solver, policy: CERO lineas tocadas.
+  Los .bin no se regeneraron ni se tocaron. Sigue siendo un cambio de advisor.
+
+
+================================================================================
+14. LO QUE SIGUE PENDIENTE
+================================================================================
+
+  1. Probar en el telefono. No se puede hacer desde una maquina.
+  2. Probar "cerrar la baza" en un dispositivo real.
+  3. La contraflor y la contraflor al resto.
+  4. STATE.md sigue desactualizado: dice 245 tests / 39 de humo / 291 del
+     scanner. Ahora son 275 / 97 / 336. Y `canto.rs` y el campo `risk_match`
+     no estan en la documentacion. No se toco a proposito.
+  5. Ajustar los pesos del modelo del rival con partidas reales.
+
+  Y uno nuevo, que sale de esta sesion:
+
+  6. EL MODELO DEL RIVAL NO SABE QUE HAY EN JUEGO. Es el problema de fondo que
+     queda parado debajo de todo lo que se arreglo hoy:
+     `envido_accept_likelihood(their_value, my_value, model)` recibe solo los
+     tantos, no el tamaño de la apuesta. Para el modelo, "quiero" a un 33 vale
+     lo mismo si la apuesta es de 2 puntos o de 30. En la mesa no: nadie acepta
+     un 33 contra una falta envido que con un 27.
+
+     Eso significa que el p_they_want que usa TODAS las formulas de esta sesion
+     tiene el error de modelo adentro. Los numeros que salieron (+3.56, 14 %)
+     son correctos DENTRO de ese modelo, que no es el de la mesa. Arreglarlo
+     es cambiar `opponent.rs` y recalibrar, y es el pendiente mas grande que
+     tiene el proyecto ahora.
+
+
+================================================================================
+SESION: skill propia, repo publico y el deploy con GitHub Actions
+================================================================================
+
+LO QUE SE PREGUNTO
+------------------
+Que skill de opencode conviene para este proyecto. La respuesta fue: ninguna
+generica. Se busco en el ecosistema (rust, wasm, game theory, typescript) y los
+que tienen miles de instalaciones son de otra cosa:
+
+  - wasm-wasmtime habla del runtime Wasmtime, no de wasm-bindgen (459)
+  - econ-game-theory habla de teoria de juegos matematica, no de truco (80)
+  - la de TypeScript mas instalada habla de "deep modules", que no es la
+    arquitectura de este repo
+
+Las tres cosas que costaban tokens aqui eran especificas: el indice de carta, el
+script de verificar, y la generacion de tipos. Ninguna skill del ecosistema las
+conoce. Por eso se escribio una propia.
+
+SKILL PROPIA
+------------
+.agents/skills/truco-argentino/SKILL.md
+
+Va en .agents/skills/ y no en .opencode/ porque el path lo resuelve el cliente
+de skills: el mismo archivo lo leen Claude Code, Cursor, opencode y el resto.
+
+Trae el indice de carta (el error mas caro, tres veces en una sesion), el
+comando unico de verificar y por que los DOS clippy, la frontera JSON, las 15
+reglas del truco que el motor calcula, los sha256 de las .bin, y los 7 errores
+ya cometidos con el sintoma de cada uno.
+
+LO QUE SE CORRIO EN EL ARCHIVO
+------------------------------
+Al leer scripts/mirar.mjs buscando bugs de multiplataforma aparecieron dos
+defectos que estaban ahi desde que se escribio:
+
+  - el encabezado de uso decia "node scripts/mirar.sh" cuando el archivo es
+    .mjs, o sea que el primer uso documentado era un comando inexistente
+  - el comentario del 2>&1 tenia "que hay que ver" repetido dos veces
+
+Y AGENTS.md tenia tres datos viejos: 275 tests (son 289), un "npm run gen:tipos"
+que no existe (es cargo test -p truco-core --test gen_tipos) y una nota que decia
+que el repo era privado. Eso ultimo es lo que mas importa: AGENTS.md se inyecta en
+el contexto del agente en cada sesion, asi que un dato viejo ahi no es inocuo.
+
+EL DEPLOY: POR QUE LA PRIVACIDAD NO ERA EL PROBLEMA
+----------------------------------------------------
+El repo paso a publico. La idea era que eso destraba Vercel, y destraba una
+cosa: Hobby no construye desde repos privados.
+
+El problema real es otro y no tiene que ver con permisos. El build de la web
+necesita tres cosas y Vercel no tiene ninguna:
+
+  - cargo con el target wasm32-unknown-unknown
+  - el CLI de wasm-bindgen
+  - las dos .bin (~2 MB, ~40 s en generarse)
+
+Ademas dist/, wasm/ y tables/ estan todos en .gitignore, asi que aunque tuviera
+Rust, no habria que servir.
+
+Se eligio GitHub Actions: los runners traen Rust y Node, y en un repo publico no
+cobran minutos. Se compila ahi y a Vercel se le sube el dist/ ya hecho, que es el
+mismo contrato que ya usaba el deploy manual.
+
+Lo descartado y por que:
+  - instalar Rust en el buildCommand de Vercel: ~6 min por deploy y el limite de
+    memoria de Hobby puede matarlo
+  - commitear los artefactos: mete 2,5 MB de binarios y contradice la decision de
+    que las .bin son deterministas y no se versionan. Ademas el wasm queda viejo
+    en silencio, que es peor que un deploy roto porque no se ve.
+
+LA TRAMPA DEL WASM-BINDGEN
+---------------------------
+La version del CLI tiene que coincidir EXACTAMENTE con la del crate en Cargo.lock.
+Si no coinciden, el .wasm se genera bien igual y el fallo aparece en RUNTIME, en
+un telefono, no en el build. Por eso el workflow lee la version del lock y baja
+ese binario, en vez de escribirla a mano.
+
+Se probo el parser contra el lock real antes de commitearlo: devolvio 0.2.129.
+
+LA PUERTA ANTES DE DESPLEGAR
+-----------------------------
+El workflow corre node scripts/mirar.mjs: los dos clippy, los 289 tests, el
+encoding, los sha256 de las tablas y el front. Publicar codigo roto es peor que
+publicar tarde.
+
+COMO FUE
+--------
+Se desplego por CLI con la sesion local: https://web-zeta-six-54.vercel.app
+Y se verifico de verdad, no solo que responde:
+
+  - las dos .bin online dan el MISMO sha256 que las locales
+    (8c0b0675... y 904ffe9a...), o sea que el motor que corre es el de aca
+  - el wasm online pesa 212 KiB, igual que el local
+  - index.html sirve los mismos assets hasheados que el build local
+  - content-types bien: application/wasm, application/manifest+json
+
+Primer push a main: 11 de 12 pasos verdes. El unico que fallo fue
+"despliega en Vercel", porque VERCEL_TOKEN esta vacio.
+
+LO QUE FALTA
+------------
+La CLI de Vercel NO puede crear tokens (403: "Cannot create tokens for this
+app"). Hay que sacarlo de https://vercel.com/account/tokens y guardarlo:
+
+    gh secret set VERCEL_TOKEN
+
+Despues, cualquier push a main despliega solo. El sitio ya esta en linea igual,
+porque se publico por CLI.
+
+================================================================================
+SESION: pulir visuales. Y dos bugs de reglas aparecidos de paso
+================================================================================
+
+LO QUE PIDIO
+------------
+Que la app "siga el ritmo de la partida": preguntar quien es mano, preguntar la
+mano en cada ronda, decir si conviene cantar envido / ir a la pesca / jugar
+callado, una seccion con el pensamiento de la IA por estado, y despues del
+envido calcular que cartas puede tener el rival y evaluar chances de ganar.
+Y limpio: solo la fase, el puntaje y el razonamiento, sin ruido.
+
+Y pidio opinion sobre que corregir, que a lo mejor no estaba viendo todo.
+
+LO QUE SE CONTESTO QUE YA EXISTIA
+---------------------------------
+- El selector de "quien reparte" YA estaba en seccionConfig (estado.soyMano).
+- La belief YA sabia cuantas manos del rival siguen posibles: Snapshot trae
+  belief_size y concentration.
+- El razonamiento YA existia: Advice.reasons.
+- "Ir a la pesca" es `callarse`, que ya es una recomendacion.
+- Las fases YA existen en el motor: Phase en match_state.rs.
+
+LO QUE FALTA EN SU LISTA DE FASES
+---------------------------------
+Las que dijo ("quien es mano", "envido", "truco", "cerrar ronda") son 4. Las
+reales del motor son 7, y le faltan dos:
+
+  - FLOR: es obligatoria y ANULA el envido. El advisor puede recomendarte envido
+    con flor en la mano, que es ilegal. Una UI que salte a "fase envido" esconde
+    justo ese problema.
+  - DECLARAR: despues de aceptar el envido, alguien declara un tanto. Y si el
+    ganador NO muestra las cartas, los puntos van al rival (match_state.rs:11).
+
+Ademas: envido y truco NO son fases secuenciales. Esta app implementa "envido
+primero": se responde a un truco cantando envido (Action::EnvidoFirst). Un flujo
+lineal envido -> truco no lo soporta.
+
+Y "si se jugo envido es facil" es demasiado optimista: tras un 33 siguen siendo
+muchas manos. Por eso conviene mostrar belief_size y concentration en vez de una
+lista de cartas, que seria una mentira que el motor no respalda.
+
+"Chances de ganar" choca con el defecto conocido: opponent.rs no sabe cuanto hay
+en juego. O se arregla eso (trabajo grande) o se rotula "chance de ganar esta
+mano", que si es calculable.
+
+DOS BUGS QUE APARECIERON AL REVISAR
+-----------------------------------
+No fueron pedido.aparecieron porque el paso 1 no se podia hacer solo.
+
+BUG 1: LA PARDA NO SE PODIA REGISTRAR
+  - `recordTrick(my, their, i_won: bool)`: un booleano, no hay donde anotar
+    "nadie la gano".
+  - `Baza { mia, suya, gane }`: sin campo `parda`.
+  - En `web/src/main.ts` la palabra "parda" aparecia CERO veces.
+  - Como no habia donde anotarla, caia en la rama de "la gano el rival".
+    Mal el marcador (`score`), mal quien guia (`next_leader_is_me`: en una parda
+    sigue guiando el mismo, no el otro), y mal la belief (wasm.rs le adjudicaba
+    al rival una carta que no se llevo).
+  - O sea: en una mesa real con parda, la app obligaba a MENTIR.
+
+BUG 2: EL MANO NO SALIA DE QUIEN GANO LA RONDA
+  - `web/src/main.ts`: `estado.ronda % 2 === 1`, con un comentario que decia que
+    eso era "la regla del juego, no una preferencia". NO LO ES.
+  - El mano de la ronda siguiente es el que gano la anterior.
+  - Como ese valor va al motor con `setMano`, el advisor repartia mal.
+  - No se podia arreglar antes: para calcular el ganador de la ronda hace falta
+    saber que bazas fueron parda. El bug 1 tapaba al bug 2.
+
+COMO SE ARREGLARON
+------------------
+`recordTrick` ahora toma el resultado como NUMERO: 0 el rival, 1 yo, 2 parda.
+Numero y no dos booleanos (`i_won` + `parda`) porque "no la gane yo" y "fue
+parda" a la vez no significan nada y se puede mandar por error. Con el enum el
+estado imposible no se escribe.
+
+`Baza::hay_ganador()` es el filtro que tienen que usar todos los que cuentan
+bazas. Sin el, una parda cuenta como baza del rival.
+
+`TrickState::round_winner(i_am_mano)` aplica la misma prioridad que
+`rules::resolve_hand`: dos bazas ganan; si no, la tercera decide; si la tercera
+fue parda, manda la primera decidida; si las tres fueron parda, gana el mano.
+
+Si la ronda se cierra sin ganador, la pantalla AVISA en vez de elegir un mano al
+azar: un mano inventado hace que el advisor razone sobre un estado que en la mesa
+no existio, y el error se ve como una recomendacion rara en vez de como un dato
+faltante.
+
+TESTS
+-----
+10 en Rust (289 -> 299) y 7 en el humo del wasm (97 -> 104).
+
+Los de Rust fijan las cuatro ramas del ganador de ronda y que la parda no sume
+para nadie. Los del wasm pasan por la frontera real, que es donde estaba el hueco.
+
+Un test fallo al principio y el equivocado era el TEST, no el codigo: con
+[parda, yo, el] nadie tiene dos bazas, asi que decide la tercera, que es la regla
+2, no la 3. Yo esperaba la regla de "la primera que se decidio".
+
+OTRAS COSAS QUE SALIERON
+------------------------
+- Los tests del frente llamaban `recordTrick(22, 7, true)` con un booleano, y
+  pasaban porque en JS `true` se coerciona a 1, que es "yo". Funcionaba por
+  casualidad. Ahora es explicito.
+- `Baza` en `Baza::nueva` y no en el inicializador: el `parda` faltante lo
+  atrapaba el compilador en los 4 tests que lo armaban a mano.
+
+COMMIT
+------
+19a7bb1 fix(reglas): una baza parda se puede registrar, y el mano es el que gano
+869a29a docs: la parda y la regla del mano, en AGENTS.md y en la skill
+9f34b7f docs: el numero de tests en la skill era 289, no 299
+
+SIGUE
+-----
+Falta el paso de la cabecera de fases y el razonamiento por estado, que es lo que
+pidio de verdad. Y falta probarlo en el telefono.
+
+================================================================================
+SESION: cabecera de fases, pensamiento de la IA, manos del rival
+================================================================================
+
+LO QUE SE HIZO
+--------------
+1. Snapshot gana `rival_top` (las 5 manos mas probables) y `exacto`. Vienen de
+   `belief.top_hands(5)` y `belief.is_exact()`, que YA EXISTIAN en belief.rs. Solo
+   hubo que exponerlos.
+
+2. Cabecera de fase arriba: en que fase estas, que toca hacer, y el puntaje. Las
+   4 fases son tu mano / flor / responde / tu jugada. Abajo siguen todas las
+   secciones que habia, pero se leen en orden.
+
+3. Panel "que esta pensando": reusa `Advice.reasons`. NO se escribio una segunda
+   explicacion, porque dos paneles de razonamiento con el tiempo dejan de
+   coincidir y nadie se entera.
+
+4. Seccion "que puede tener el rival", con la masa de cada mano. Cuando queda una
+   sola, dice "ya esta determinado".
+
+LA FASE VIVE EN LA PANTALLA, Y NO EN EL MOTOR
+---------------------------------------------
+La API del wasm es de ASESOR, no de partida. No guarda la secuencia de cantos, ni
+a quien le toca responder, ni que se declaro: eso vive en `main.ts`. Poner la
+fase en Rust seria duplicar en el motor un estado que la pantalla ya tiene, y las
+dos copias se contradiririan.
+
+Por eso NO hay fase "declarar el tanto": el motor no expone si el envido se
+acepto. Una fase que aparece y desaparece por un dato que no tenes es peor que
+no tenerla.
+
+BUG DE GENERACION DE TIPOS QUE SALIO DE PASO
+-------------------------------------------
+`gen_tipos` usaba `Config::default()` con un `set_var("TS_RS_EXPORT_DIR")`
+delante. El set_var NO HACIA NADA: la ruta de salida la lee solo
+`Config::from_env()`, que es el unico que mira esa variable.
+
+Los `.ts` se estaban escribiendo en `crates/truco-core/bindings/`, que es donde
+la pantalla no los ve, y los de `web/src/tipos/` eran de una corrida vieja.
+Pasaba inadvertido porque los viejos servian mientras nadie tocara un struct.
+
+El `build.rs` que se habia escrito para arreglar esto estaba MUERTO: definia
+TRUCO_RAIZ, que nadie leia, y nunca toco TS_RS_EXPORT_DIR. Se borro. Un
+`cargo:rustc-env` tampoco habria servido: eso define una variable de COMPILACION
+y ts-rs la lee en tiempo de corrida.
+
+COMO SE ENCONTRO
+----------------
+Agregando `ManoProbable` al Snapshot y viendo que el `.ts` generado no lo tenia.
+Con `bindings/` ignorado y los `.ts` viejos sirviendo, el sintoma era invisible:
+un campo nuevo en el snapshot no llegaba a la pantalla y nada fallaba hasta que
+se usara.
+
+COMO SE VERIFICO
+----------------
+300 tests (299 -> 300), los dos clippy limpios, tsc limpio, humo 104, scanner
+336, los dos .bin con los mismos sha256.
+
+En CI: 11 de 12 pasos verdes. El unico que falla sigue siendo "despliega en
+Vercel" porque VERCEL_TOKEN sigue sin existir.
+
+COMMITS
+-------
+0e95442 feat(pwa): cabecera de fase, el pensamiento de la IA, y las manos del rival
+(19a7bb1, 869a29a y 9f34b7f de la sesion anterior)
+
+PENDIENTE
+---------
+- El VERCEL_TOKEN: https://vercel.com/account/tokens y gh secret set VERCEL_TOKEN
+- Probar en el telefono. Sigue siendo lo unico que ninguna prueba automatica ve.
+- La fase "declarar" si el motor alguna vez expone si el envido se acepto.
